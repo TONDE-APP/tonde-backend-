@@ -1,0 +1,18 @@
+TONDE — Migrations Alembic
+
+Commandes à exécuter depuis le conteneur Docker :
+
+  # Générer une migration après modification d'un modèle
+  docker-compose exec api alembic revision --autogenerate -m "description"
+
+  # Appliquer toutes les migrations en attente
+  docker-compose exec api alembic upgrade head
+
+  # Voir l'état actuel
+  docker-compose exec api alembic current
+
+  # Revenir à la migration précédente
+  docker-compose exec api alembic downgrade -1
+
+  # Voir l'historique
+  docker-compose exec api alembic history

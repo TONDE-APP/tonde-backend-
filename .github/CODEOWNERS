@@ -1,0 +1,11 @@
+# TONDE — Code Owners
+# Vital doit approuver tout Pull Request avant merge
+
+# Tout le projet
+* @VitalNdayizeye
+
+# Fichiers critiques — double validation obligatoire
+app/core/         @VitalNdayizeye
+app/models/       @VitalNdayizeye
+migrations/       @VitalNdayizeye
+requirements.txt  @VitalNdayizeye

@@ -1,0 +1,105 @@
+"""
+Schémas Pydantic pour l'authentification.
+Ces schémas valident les données qui entrent et sortent de l'API.
+"""
+from pydantic import BaseModel, EmailStr, field_validator, ConfigDict
+import re
+
+
+# ── Inscription par téléphone ─────────────────────────────────────────────────
+class RegisterPhoneRequest(BaseModel):
+    phone: str
+    country_code: str = "BI"  # Burundi par défaut
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, v):
+        # Nettoyer le numéro (enlever espaces, tirets)
+        phone = re.sub(r"[\s\-\(\)]", "", v)
+        # Vérifier le format
+        if not re.match(r"^\+?[1-9]\d{7,14}$", phone):
+            raise ValueError("Numéro de téléphone invalide")
+        return phone
+
+
+class RegisterPhoneResponse(BaseModel):
+    success: bool = True
+    message: str = "Code OTP envoyé par SMS"
+    otp_sent: bool = True
+    expires_in_seconds: int = 300  # 5 minutes
+
+
+# ── Vérification OTP ──────────────────────────────────────────────────────────
+class VerifyOtpRequest(BaseModel):
+    phone: str
+    otp: str
+
+    @field_validator("otp")
+    @classmethod
+    def validate_otp(cls, v):
+        if not re.match(r"^\d{6}$", v):
+            raise ValueError("Le code OTP doit contenir 6 chiffres")
+        return v
+
+
+# ── Inscription par email ─────────────────────────────────────────────────────
+class RegisterEmailRequest(BaseModel):
+    email: EmailStr
+    password: str
+    name: str
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v):
+        if len(v) < 8:
+            raise ValueError("Le mot de passe doit contenir au moins 8 caractères")
+        return v
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v):
+        if len(v.strip()) < 2:
+            raise ValueError("Le nom doit contenir au moins 2 caractères")
+        return v.strip()
+
+
+# ── Connexion par email ───────────────────────────────────────────────────────
+class LoginEmailRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+# ── Refresh Token ─────────────────────────────────────────────────────────────
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+# ── Réponse après connexion réussie ──────────────────────────────────────────
+class UserInToken(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str | None
+    phone: str | None
+    email: str | None
+    role: str
+    language: str
+    is_verified: bool
+
+
+class AuthResponse(BaseModel):
+    success: bool = True
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: UserInToken
+
+
+# ── Réponse erreur standard ───────────────────────────────────────────────────
+class ErrorResponse(BaseModel):
+    success: bool = False
+    error: dict
+
+    @classmethod
+    def create(cls, code: str, message: str):
+        return cls(error={"code": code, "message": message})

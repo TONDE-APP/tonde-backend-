@@ -1,0 +1,42 @@
+# ── API Framework ─────────────────────────────────────────────────────────────
+fastapi==0.111.0          # Framework principal
+uvicorn[standard]==0.30.1 # Serveur ASGI
+
+# ── Base de données ───────────────────────────────────────────────────────────
+sqlalchemy==2.0.30        # ORM async
+alembic==1.13.1           # Migrations DB
+asyncpg==0.29.0           # Driver PostgreSQL async
+psycopg2-binary==2.9.9    # Driver PostgreSQL (fallback sync pour Alembic offline)
+
+# ── Authentification & Sécurité ───────────────────────────────────────────────
+python-jose[cryptography]==3.3.0  # JWT
+passlib[bcrypt]==1.7.4            # Hachage bcrypt
+bcrypt==4.0.1                     # Version compatible avec passlib 1.7.4
+python-multipart==0.0.9           # Formulaires multipart
+
+# ── Cache & Temps réel ────────────────────────────────────────────────────────
+redis==5.0.4              # Client Redis async (aioredis intégré)
+websockets==12.0          # Support WebSocket
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+slowapi==0.1.9            # Rate limiting pour FastAPI
+
+# ── Variables d'environnement ─────────────────────────────────────────────────
+python-dotenv==1.0.1      # Lire le fichier .env
+pydantic[email]==2.7.1    # Validation des données
+pydantic-settings==2.3.0  # Settings depuis .env
+
+# ── Notifications ─────────────────────────────────────────────────────────────
+africastalking==1.2.5     # SMS Afrique (Burundi, RDC)
+httpx==0.27.0             # Client HTTP async (Firebase FCM)
+
+# ── Utilitaires ───────────────────────────────────────────────────────────────
+python-slugify==8.0.4     # Générer des slugs URL
+Pillow==10.3.0            # Traitement images (photos profil)
+qrcode==7.4.2             # Génération QR Code tickets
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+pytest==8.2.2
+pytest-asyncio==0.23.7
+aiosqlite==0.20.0         # SQLite async pour les tests (pas besoin de PostgreSQL)
+httpx==0.27.0             # Client HTTP pour les tests d'intégration

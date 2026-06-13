@@ -1,0 +1,177 @@
+"""
+Client Redis — cache, OTP, file d'attente temps réel.
+
+Conventions de nommage des clés :
+  tonde:{org_id}:{agency_id}:queue       → Sorted Set (file d'attente)
+  tonde:otp:{phone}                       → OTP temporaire
+  tonde:otp_attempts:{phone}              → Compteur tentatives OTP
+  tonde:cache:{key}                       → Cache général
+
+Le préfixe 'tonde:' isole les clés TONDE des autres apps
+sur le même Redis. L'org_id garantit l'isolation multi-tenant.
+"""
+import json
+import logging
+from typing import Any, Optional
+import redis.asyncio as aioredis
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+# ── Connexion Redis ───────────────────────────────────────────────────────────
+redis_client: Optional[aioredis.Redis] = None
+
+
+async def get_redis() -> aioredis.Redis:
+    """Retourne le client Redis. Crée la connexion si elle n'existe pas."""
+    global redis_client
+    if redis_client is None:
+        redis_client = aioredis.from_url(
+            settings.REDIS_URL,
+            encoding="utf-8",
+            decode_responses=True,
+        )
+    return redis_client
+
+
+async def close_redis() -> None:
+    """Ferme la connexion Redis proprement à l'arrêt de l'app."""
+    global redis_client
+    if redis_client:
+        await redis_client.aclose()
+        redis_client = None
+        logger.info("Redis — connexion fermée")
+
+
+# ── Helpers OTP ───────────────────────────────────────────────────────────────
+async def save_otp(phone: str, otp: str) -> None:
+    """
+    Sauvegarde l'OTP dans Redis avec TTL automatique.
+    Réinitialise aussi le compteur de tentatives.
+
+    Args:
+        phone: Numéro de téléphone normalisé
+        otp: Code à 6 chiffres
+    """
+    r = await get_redis()
+    expire_seconds = settings.OTP_EXPIRE_MINUTES * 60
+    await r.setex(f"tonde:otp:{phone}", expire_seconds, otp)
+    await r.setex(f"tonde:otp_attempts:{phone}", expire_seconds, "0")
+
+
+async def get_otp(phone: str) -> Optional[str]:
+    """Récupère l'OTP stocké pour un numéro. Retourne None si expiré."""
+    r = await get_redis()
+    return await r.get(f"tonde:otp:{phone}")
+
+
+async def increment_otp_attempts(phone: str) -> int:
+    """Incrémente le compteur de tentatives OTP. Retourne le nouveau compteur."""
+    r = await get_redis()
+    return await r.incr(f"tonde:otp_attempts:{phone}")
+
+
+async def delete_otp(phone: str) -> None:
+    """Supprime l'OTP après vérification réussie."""
+    r = await get_redis()
+    await r.delete(f"tonde:otp:{phone}", f"tonde:otp_attempts:{phone}")
+
+
+# ── Helpers File d'attente ────────────────────────────────────────────────────
+def _queue_key(org_id: str, agency_id: str) -> str:
+    """
+    Génère la clé Redis de la file d'attente.
+    Format : tonde:{org_id}:{agency_id}:queue
+    """
+    return f"tonde:{org_id}:{agency_id}:queue"
+
+
+async def add_to_queue(
+    org_id: str, agency_id: str, ticket_id: str, priority: int = 0
+) -> int:
+    """
+    Ajoute un ticket dans la file d'attente Redis (Sorted Set).
+
+    Le score garantit l'ordre de service :
+      - Priorité haute (emergency=9) → score bas → servi en premier
+      - FIFO dans la même priorité via le timestamp
+
+    Args:
+        org_id: Isolation multi-tenant
+        agency_id: Identifiant de l'agence
+        ticket_id: UUID du ticket
+        priority: Score de priorité (0=standard, 3=priority, 5=vip, 9=emergency)
+
+    Returns:
+        Position dans la file (commence à 1)
+    """
+    import time
+    r = await get_redis()
+    key = _queue_key(org_id, agency_id)
+    # Score = (10 - priority) * 1B + timestamp_ms
+    # Exemple emergency : (10-9)*1B + ts ≈ 1_000_000_483921
+    # Exemple standard  : (10-0)*1B + ts ≈ 10_000_000_483950
+    score = (10 - priority) * 1_000_000_000 + int(time.time() * 1000)
+    await r.zadd(key, {ticket_id: score})
+    position = await r.zrank(key, ticket_id)
+    return (position or 0) + 1
+
+
+async def get_queue_position(org_id: str, agency_id: str, ticket_id: str) -> int:
+    """Retourne la position du ticket dans la file (commence à 1, 0 si absent)."""
+    r = await get_redis()
+    position = await r.zrank(_queue_key(org_id, agency_id), ticket_id)
+    if position is None:
+        return 0
+    return position + 1
+
+
+async def get_queue_size(org_id: str, agency_id: str) -> int:
+    """Retourne le nombre de tickets en attente dans la file."""
+    r = await get_redis()
+    return await r.zcard(_queue_key(org_id, agency_id))
+
+
+async def remove_from_queue(org_id: str, agency_id: str, ticket_id: str) -> None:
+    """Retire un ticket de la file (appelé, annulé ou expiré)."""
+    r = await get_redis()
+    await r.zrem(_queue_key(org_id, agency_id), ticket_id)
+
+
+async def get_next_ticket(org_id: str, agency_id: str) -> Optional[str]:
+    """
+    Retourne l'ID du prochain ticket à servir (premier du Sorted Set).
+    Ne le retire pas de la file — c'est remove_from_queue() qui le fait.
+    """
+    r = await get_redis()
+    results = await r.zrange(_queue_key(org_id, agency_id), 0, 0)
+    return results[0] if results else None
+
+
+async def get_queue_snapshot(org_id: str, agency_id: str) -> list[str]:
+    """
+    Retourne tous les IDs de tickets dans la file, dans l'ordre de service.
+    Utilisé pour les mises à jour WebSocket périodiques.
+    """
+    r = await get_redis()
+    return await r.zrange(_queue_key(org_id, agency_id), 0, -1)
+
+
+# ── Cache général ─────────────────────────────────────────────────────────────
+async def cache_set(key: str, value: Any, expire_seconds: int = 300) -> None:
+    """Sauvegarde une valeur sérialisée dans le cache pendant X secondes."""
+    r = await get_redis()
+    await r.setex(f"tonde:cache:{key}", expire_seconds, json.dumps(value))
+
+
+async def cache_get(key: str) -> Optional[Any]:
+    """Récupère une valeur du cache. Retourne None si absente ou expirée."""
+    r = await get_redis()
+    value = await r.get(f"tonde:cache:{key}")
+    return json.loads(value) if value else None
+
+
+async def cache_delete(key: str) -> None:
+    """Supprime une valeur du cache."""
+    r = await get_redis()
+    await r.delete(f"tonde:cache:{key}")

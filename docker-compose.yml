@@ -1,0 +1,77 @@
+# TONDE — Docker Compose
+# Lance tout avec : docker-compose up -d --build
+# Voir les logs  : docker-compose logs -f api
+
+services:
+
+  # ── L'API FastAPI ─────────────────────────────────────────────
+  api:
+    build: .
+    container_name: tonde-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://tonde:tonde123@db:5432/tonde_db
+      - REDIS_URL=redis://redis:6379
+      - CREATE_TABLES_ON_STARTUP=true
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+      - ./migrations:/app/migrations
+      - ./tests:/app/tests
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+  # ── PostgreSQL ────────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: tonde-db
+    environment:
+      POSTGRES_USER: tonde
+      POSTGRES_PASSWORD: tonde123
+      POSTGRES_DB: tonde_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tonde -d tonde_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis ─────────────────────────────────────────────────────
+  # Port mappé sur 6380 (hôte) → 6379 (conteneur)
+  # pour éviter le conflit avec un Redis local sur le port 6379
+  redis:
+    image: redis:7-alpine
+    container_name: tonde-redis
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Interface Redis (optionnel) ───────────────────────────────
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: tonde-redis-ui
+    environment:
+      - REDIS_HOSTS=local:redis:6379
+    ports:
+      - "8081:8081"
+    depends_on:
+      - redis
+
+volumes:
+  postgres_data:

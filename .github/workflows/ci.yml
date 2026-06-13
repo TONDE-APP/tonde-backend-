@@ -1,0 +1,59 @@
+name: TONDE Backend CI
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: Tests & Qualité
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: tonde
+          POSTGRES_PASSWORD: tonde123
+          POSTGRES_DB: tonde_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql+asyncpg://tonde:tonde123@localhost:5432/tonde_db
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET_KEY: ci-test-secret-key-not-for-production
+          ENVIRONMENT: development
+          CREATE_TABLES_ON_STARTUP: "false"
+        run: pytest --tb=short -q

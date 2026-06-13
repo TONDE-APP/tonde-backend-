@@ -1,0 +1,10 @@
+# Normaliser les fins de ligne à LF pour tout le projet
+# Évite les conflits LF/CRLF entre Windows et Linux (serveur Docker)
+* text=auto eol=lf
+
+# Fichiers binaires — ne pas toucher
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.pdf binary
