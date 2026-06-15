@@ -24,6 +24,8 @@ from app.core.security import (
 from app.core.redis import (
     save_otp, get_otp, delete_otp,
     increment_otp_attempts,
+    is_phone_blocked, block_phone,
+    increment_register_attempts, PHONE_REGISTER_MAX, PHONE_BLOCK_SECONDS,
 )
 from app.core.config import settings
 from app.schemas.auth import (
@@ -44,6 +46,10 @@ class AuthService:
         """
         L'utilisateur entre son numéro → reçoit un OTP par SMS.
 
+        Protections :
+          - Max 3 demandes SMS par numéro par minute (anti-spam SMS)
+          - Numéro bloqué si trop d'échecs OTP précédents
+
         En développement (ENVIRONMENT=development) :
           - L'OTP est toujours 123456
           - Aucun SMS n'est envoyé
@@ -51,13 +57,48 @@ class AuthService:
         Returns:
             Dict avec success, message, expires_in_seconds
             En développement : inclut dev_otp pour les tests
+
+        Raises:
+            HTTPException 429: Trop de demandes SMS ou numéro bloqué
         """
         phone = data.phone
+
+        # Couche 1 — Numéro bloqué suite à trop d'échecs OTP ?
+        blocked, seconds_left = await is_phone_blocked(phone)
+        if blocked:
+            minutes_left = (seconds_left + 59) // 60
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "code": "PHONE_BLOCKED",
+                    "message": (
+                        f"Ce numéro est temporairement bloqué suite à trop de tentatives incorrectes. "
+                        f"Réessayez dans {minutes_left} minute(s)."
+                    ),
+                    "retry_after_seconds": seconds_left,
+                },
+            )
+
+        # Couche 2 — Trop de demandes de SMS sur ce numéro ?
+        sms_count = await increment_register_attempts(phone)
+        if sms_count > PHONE_REGISTER_MAX:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "code": "SMS_RATE_LIMIT",
+                    "message": (
+                        f"Trop de demandes de code pour ce numéro. "
+                        f"Vous pouvez demander au maximum {PHONE_REGISTER_MAX} codes par minute. "
+                        f"Attendez avant de réessayer."
+                    ),
+                    "retry_after_seconds": 60,
+                },
+            )
 
         # Générer l'OTP
         otp = DEV_OTP if settings.ENVIRONMENT == "development" else generate_otp()
 
-        # Stocker dans Redis avec TTL
+        # Stocker dans Redis avec TTL (réinitialise aussi le compteur d'échecs)
         await save_otp(phone, otp)
 
         # Envoyer le SMS
@@ -84,6 +125,11 @@ class AuthService:
         Vérifie l'OTP et retourne les tokens JWT.
         Crée automatiquement le compte si c'est le premier login.
 
+        Protections :
+          - Numéro bloqué si déjà trop d'échecs → 429 immédiat
+          - Max OTP_MAX_ATTEMPTS tentatives par code (défaut 5)
+          - Blocage 15 min du numéro après épuisement des tentatives
+
         Args:
             data: phone + otp saisi par l'utilisateur
 
@@ -92,36 +138,85 @@ class AuthService:
 
         Raises:
             HTTPException 400: OTP expiré ou invalide
-            HTTPException 429: Trop de tentatives
+            HTTPException 429: Numéro bloqué ou trop de tentatives
         """
         phone = data.phone
         otp = data.otp
 
-        # Vérifier que l'OTP existe encore dans Redis
+        # Couche 1 — Numéro déjà bloqué ?
+        blocked, seconds_left = await is_phone_blocked(phone)
+        if blocked:
+            minutes_left = (seconds_left + 59) // 60
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "code": "PHONE_BLOCKED",
+                    "message": (
+                        f"Ce numéro est temporairement bloqué suite à trop de tentatives incorrectes. "
+                        f"Réessayez dans {minutes_left} minute(s)."
+                    ),
+                    "retry_after_seconds": seconds_left,
+                },
+            )
+
+        # Couche 2 — OTP existe encore dans Redis ?
         stored_otp = await get_otp(phone)
         if not stored_otp:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "OTP_EXPIRED", "message": "Le code OTP a expiré. Demandez un nouveau code."},
-            )
-
-        # Incrémenter et vérifier le compteur de tentatives
-        attempts = await increment_otp_attempts(phone)
-        if attempts > settings.OTP_MAX_ATTEMPTS:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail={"code": "TOO_MANY_ATTEMPTS", "message": "Trop de tentatives. Demandez un nouveau code."},
-            )
-
-        # Comparer les OTP
-        if otp != stored_otp:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
-                    "code": "INVALID_OTP",
-                    "message": f"Code incorrect. Tentative {attempts}/{settings.OTP_MAX_ATTEMPTS}",
+                    "code": "OTP_EXPIRED",
+                    "message": "Le code OTP a expiré. Demandez un nouveau code en renvoyant votre numéro.",
                 },
             )
+
+        # Couche 3 — Incrémenter et vérifier le compteur de tentatives
+        attempts = await increment_otp_attempts(phone)
+        if attempts > settings.OTP_MAX_ATTEMPTS:
+            # Épuisement total → bloquer le numéro 15 minutes
+            await block_phone(phone)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "code": "PHONE_BLOCKED",
+                    "message": (
+                        f"Trop de tentatives incorrectes. "
+                        f"Ce numéro est bloqué pendant 15 minutes. "
+                        f"Si vous n'avez pas demandé ce code, ignorez ce message."
+                    ),
+                    "retry_after_seconds": PHONE_BLOCK_SECONDS,
+                },
+            )
+
+        # Couche 4 — Comparer les OTP
+        if otp != stored_otp:
+            remaining = settings.OTP_MAX_ATTEMPTS - attempts
+            if remaining > 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail={
+                        "code": "INVALID_OTP",
+                        "message": (
+                            f"Code incorrect. Il vous reste {remaining} tentative(s) "
+                            f"avant le blocage temporaire du numéro."
+                        ),
+                        "attempts_remaining": remaining,
+                    },
+                )
+            else:
+                # Dernière tentative épuisée → bloquer maintenant
+                await block_phone(phone)
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail={
+                        "code": "PHONE_BLOCKED",
+                        "message": (
+                            "Code incorrect. Vous avez épuisé toutes vos tentatives. "
+                            "Ce numéro est bloqué pendant 15 minutes."
+                        ),
+                        "retry_after_seconds": PHONE_BLOCK_SECONDS,
+                    },
+                )
 
         # OTP correct → supprimer de Redis
         await delete_otp(phone)

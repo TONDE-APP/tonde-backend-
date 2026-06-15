@@ -1,7 +1,9 @@
 """
 Router d'authentification — les endpoints /api/v1/auth/...
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -13,15 +15,24 @@ from app.schemas.auth import (
 from app.services.auth_service import AuthService
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/register/phone", summary="Inscription par téléphone — envoi OTP")
+@limiter.limit("5/minute")
 async def register_phone(
+    request: Request,
     body: RegisterPhoneRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
     L'utilisateur entre son numéro → reçoit un SMS avec le code OTP.
+
+    Limites de sécurité :
+    - Max 5 requêtes/minute par IP (couche réseau)
+    - Max 3 demandes SMS/minute par numéro (couche service)
+    - Numéro bloqué 15 min après trop d'échecs OTP
+
     En développement, le code est toujours 123456.
     """
     service = AuthService(db)
@@ -29,12 +40,21 @@ async def register_phone(
 
 
 @router.post("/verify-otp", summary="Vérifier le code OTP → obtenir JWT")
+@limiter.limit("10/minute")
 async def verify_otp(
+    request: Request,
     body: VerifyOtpRequest,
     db: AsyncSession = Depends(get_db)
 ):
     """
     L'utilisateur entre le code OTP reçu par SMS.
+
+    Limites de sécurité :
+    - Max 10 requêtes/minute par IP (couche réseau)
+    - Max 5 tentatives par code OTP par numéro (couche service)
+    - Blocage 15 min du numéro après épuisement des tentatives
+    - Message clair indiquant le nombre de tentatives restantes
+
     Si correct → retourne access_token + refresh_token + profil.
     """
     service = AuthService(db)

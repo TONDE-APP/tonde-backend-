@@ -10,9 +10,12 @@ En développement : create_tables() peut créer les tables au démarrage
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.redis import get_redis, close_redis
@@ -24,6 +27,10 @@ import app.models  # noqa: F401
 from app.routers import auth, tickets, organizations, agencies
 
 logger = logging.getLogger(__name__)
+
+# ── Rate Limiter (slowapi) ─────────────────────────────────────────────────────
+# Limite globale par IP — les routes sensibles ont leurs propres limites
+limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 
 # ── Démarrage et arrêt de l'app ───────────────────────────────────────────────
@@ -84,6 +91,29 @@ L'OTP de test en développement est toujours **123456**
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# ── Rate limiting — handler 429 standardisé ───────────────────────────────────
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Retourne une erreur 429 structurée quand la limite IP est dépassée."""
+    return JSONResponse(
+        status_code=429,
+        content={
+            "success": False,
+            "error": {
+                "code": "RATE_LIMIT_EXCEEDED",
+                "message": (
+                    "Trop de requêtes depuis votre adresse. "
+                    "Veuillez patienter avant de réessayer."
+                ),
+                "retry_after": getattr(exc, "retry_after", 60),
+            },
+        },
+        headers={"Retry-After": str(getattr(exc, "retry_after", 60))},
+    )
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
