@@ -21,7 +21,7 @@ from app.core.redis import get_redis, close_redis
 # connaisse toutes les tables avant toute opération DB
 import app.models  # noqa: F401
 
-from app.routers import auth, tickets
+from app.routers import auth, tickets, organizations
 
 logger = logging.getLogger(__name__)
 
@@ -97,8 +97,9 @@ app.add_middleware(
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
-app.include_router(auth.router,    prefix="/api/v1/auth",    tags=["🔐 Auth"])
-app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["🎫 Tickets"])
+app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["🔐 Auth"])
+app.include_router(tickets.router,       prefix="/api/v1/tickets",       tags=["🎫 Tickets"])
+app.include_router(organizations.router, prefix="/api/v1/organizations", tags=["🏢 Organizations"])
 
 
 # ── Endpoints de base ─────────────────────────────────────────────────────────
