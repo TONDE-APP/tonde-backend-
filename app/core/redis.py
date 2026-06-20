@@ -2,14 +2,15 @@
 Client Redis — cache, OTP, file d'attente temps réel.
 
 Conventions de nommage des clés :
-  tonde:{org_id}:{agency_id}:queue       → Sorted Set (file d'attente)
-  tonde:otp:{phone}                       → OTP temporaire
-  tonde:otp_attempts:{phone}              → Compteur tentatives OTP
-  tonde:cache:{key}                       → Cache général
+  tonde:{org_id}:{agency_id}:{service_id}:queue  → Sorted Set (file d'attente)
+  tonde:otp:{phone}                               → Hash SHA-256 de l'OTP (jamais en clair)
+  tonde:otp_attempts:{phone}                      → Compteur tentatives OTP
+  tonde:cache:{key}                               → Cache général
 
 Le préfixe 'tonde:' isole les clés TONDE des autres apps
 sur le même Redis. L'org_id garantit l'isolation multi-tenant.
 """
+import hashlib
 import json
 import logging
 from typing import Any, Optional
@@ -44,23 +45,48 @@ async def close_redis() -> None:
 
 
 # ── Helpers OTP ───────────────────────────────────────────────────────────────
+def _hash_otp(otp: str) -> str:
+    """
+    Calcule le hash SHA-256 d'un OTP.
+
+    L'OTP ne doit jamais être stocké en clair dans Redis.
+    Cette fonction est l'unique point de hashage — toute persistance OTP passe par ici.
+
+    Args:
+        otp: Code OTP en clair (ex: "123456")
+
+    Returns:
+        Chaîne hexadécimale de 64 caractères (SHA-256)
+    """
+    return hashlib.sha256(otp.encode()).hexdigest()
+
+
 async def save_otp(phone: str, otp: str) -> None:
     """
-    Sauvegarde l'OTP dans Redis avec TTL automatique.
+    Sauvegarde le HASH SHA-256 de l'OTP dans Redis avec TTL automatique.
     Réinitialise aussi le compteur de tentatives.
+
+    L'OTP en clair n'est jamais persisté. Si Redis est compromis,
+    les hash stockés ne permettent pas de reconstituer les codes originaux.
 
     Args:
         phone: Numéro de téléphone normalisé
-        otp: Code à 6 chiffres
+        otp: Code OTP en clair (hashé avant persistance)
     """
     r = await get_redis()
     expire_seconds = settings.OTP_EXPIRE_MINUTES * 60
-    await r.setex(f"tonde:otp:{phone}", expire_seconds, otp)
+    await r.setex(f"tonde:otp:{phone}", expire_seconds, _hash_otp(otp))
     await r.setex(f"tonde:otp_attempts:{phone}", expire_seconds, "0")
 
 
 async def get_otp(phone: str) -> Optional[str]:
-    """Récupère l'OTP stocké pour un numéro. Retourne None si expiré."""
+    """
+    Récupère le hash SHA-256 de l'OTP stocké pour un numéro.
+
+    Returns:
+        Hash SHA-256 (64 caractères hexadécimaux) ou None si expiré/absent.
+        La valeur retournée est un hash, jamais le code OTP en clair.
+    """
     r = await get_redis()
     return await r.get(f"tonde:otp:{phone}")
 
@@ -78,16 +104,19 @@ async def delete_otp(phone: str) -> None:
 
 
 # ── Helpers File d'attente ────────────────────────────────────────────────────
-def _queue_key(org_id: str, agency_id: str) -> str:
+def _queue_key(org_id: str, agency_id: str, service_id: str) -> str:
     """
-    Génère la clé Redis de la file d'attente.
-    Format : tonde:{org_id}:{agency_id}:queue
+    Génère la clé Redis de la file d'attente, segmentée par service.
+    Format : tonde:{org_id}:{agency_id}:{service_id}:queue
+
+    Chaque service a sa propre file Redis indépendante dans la même agence.
+    Cela permet à Caisse, Crédit, Conseiller d'avoir des files distinctes.
     """
-    return f"tonde:{org_id}:{agency_id}:queue"
+    return f"tonde:{org_id}:{agency_id}:{service_id}:queue"
 
 
 async def add_to_queue(
-    org_id: str, agency_id: str, ticket_id: str, priority: int = 0
+    org_id: str, agency_id: str, service_id: str, ticket_id: str, priority: int = 0
 ) -> int:
     """
     Ajoute un ticket dans la file d'attente Redis (Sorted Set).
@@ -99,6 +128,7 @@ async def add_to_queue(
     Args:
         org_id: Isolation multi-tenant
         agency_id: Identifiant de l'agence
+        service_id: Identifiant du service (Caisse, Crédit, etc.)
         ticket_id: UUID du ticket
         priority: Score de priorité (0=standard, 3=priority, 5=vip, 9=emergency)
 
@@ -107,54 +137,51 @@ async def add_to_queue(
     """
     import time
     r = await get_redis()
-    key = _queue_key(org_id, agency_id)
-    # Score = (10 - priority) * 1B + timestamp_ms
-    # Exemple emergency : (10-9)*1B + ts ≈ 1_000_000_483921
-    # Exemple standard  : (10-0)*1B + ts ≈ 10_000_000_483950
+    key = _queue_key(org_id, agency_id, service_id)
     score = (10 - priority) * 1_000_000_000 + int(time.time() * 1000)
     await r.zadd(key, {ticket_id: score})
     position = await r.zrank(key, ticket_id)
     return (position or 0) + 1
 
 
-async def get_queue_position(org_id: str, agency_id: str, ticket_id: str) -> int:
+async def get_queue_position(org_id: str, agency_id: str, service_id: str, ticket_id: str) -> int:
     """Retourne la position du ticket dans la file (commence à 1, 0 si absent)."""
     r = await get_redis()
-    position = await r.zrank(_queue_key(org_id, agency_id), ticket_id)
+    position = await r.zrank(_queue_key(org_id, agency_id, service_id), ticket_id)
     if position is None:
         return 0
     return position + 1
 
 
-async def get_queue_size(org_id: str, agency_id: str) -> int:
-    """Retourne le nombre de tickets en attente dans la file."""
+async def get_queue_size(org_id: str, agency_id: str, service_id: str) -> int:
+    """Retourne le nombre de tickets en attente dans la file du service."""
     r = await get_redis()
-    return await r.zcard(_queue_key(org_id, agency_id))
+    return await r.zcard(_queue_key(org_id, agency_id, service_id))
 
 
-async def remove_from_queue(org_id: str, agency_id: str, ticket_id: str) -> None:
-    """Retire un ticket de la file (appelé, annulé ou expiré)."""
+async def remove_from_queue(org_id: str, agency_id: str, service_id: str, ticket_id: str) -> None:
+    """Retire un ticket de la file du service (appelé, annulé ou expiré)."""
     r = await get_redis()
-    await r.zrem(_queue_key(org_id, agency_id), ticket_id)
+    await r.zrem(_queue_key(org_id, agency_id, service_id), ticket_id)
 
 
-async def get_next_ticket(org_id: str, agency_id: str) -> Optional[str]:
+async def get_next_ticket(org_id: str, agency_id: str, service_id: str) -> Optional[str]:
     """
-    Retourne l'ID du prochain ticket à servir (premier du Sorted Set).
+    Retourne l'ID du prochain ticket à servir dans la file du service.
     Ne le retire pas de la file — c'est remove_from_queue() qui le fait.
     """
     r = await get_redis()
-    results = await r.zrange(_queue_key(org_id, agency_id), 0, 0)
+    results = await r.zrange(_queue_key(org_id, agency_id, service_id), 0, 0)
     return results[0] if results else None
 
 
-async def get_queue_snapshot(org_id: str, agency_id: str) -> list[str]:
+async def get_queue_snapshot(org_id: str, agency_id: str, service_id: str) -> list[str]:
     """
-    Retourne tous les IDs de tickets dans la file, dans l'ordre de service.
+    Retourne tous les IDs de tickets dans la file du service, dans l'ordre de service.
     Utilisé pour les mises à jour WebSocket périodiques.
     """
     r = await get_redis()
-    return await r.zrange(_queue_key(org_id, agency_id), 0, -1)
+    return await r.zrange(_queue_key(org_id, agency_id, service_id), 0, -1)
 
 
 # ── Cache général ─────────────────────────────────────────────────────────────
