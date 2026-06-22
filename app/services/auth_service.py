@@ -210,6 +210,7 @@ class AuthService:
 
         user.last_login = datetime.now(timezone.utc)
         await self.db.commit()
+        await self.db.refresh(user)
 
         logger.info(f"Connexion email: {data.email} | user_id={user.id}")
 
@@ -254,7 +255,12 @@ class AuthService:
                 detail={"code": "TOKEN_REVOKED", "message": "Cette session a été révoquée. Reconnectez-vous."},
             )
 
-        if datetime.now(timezone.utc) >= record.expires_at:
+        # Normaliser expires_at pour la comparaison (SQLite renvoie des datetimes naïfs)
+        expires_at = record.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if datetime.now(timezone.utc) >= expires_at:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"code": "TOKEN_EXPIRED", "message": "Token de rafraîchissement expiré. Reconnectez-vous."},
@@ -277,6 +283,7 @@ class AuthService:
         )
         self.db.add(new_record)
         await self.db.commit()
+        self.db.expunge(new_record)  # évite la re-insertion lors du commit suivant
 
         return RefreshResponse(
             access_token=new_access_jwt,
@@ -395,7 +402,9 @@ class AuthService:
                     RefreshToken.revoked_at.is_(None),
                 )
                 .values(revoked_at=datetime.now(timezone.utc))
+                .execution_options(synchronize_session="fetch")
             )
+            await self.db.flush()
 
         # Persister le nouveau refresh token (hashé)
         new_record = RefreshToken(
@@ -407,6 +416,9 @@ class AuthService:
         )
         self.db.add(new_record)
         await self.db.commit()
+        # Sortir new_record de la session pour éviter qu'il soit re-inséré
+        # lors d'un commit ultérieur (important avec expire_on_commit=False)
+        self.db.expunge(new_record)
 
         return AuthResponse(
             access_token=create_access_token(user.id),

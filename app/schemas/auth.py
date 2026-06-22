@@ -33,6 +33,7 @@ class RegisterPhoneResponse(BaseModel):
 class VerifyOtpRequest(BaseModel):
     phone: str
     otp: str
+    device_id: str | None = None   # identifiant du device pour le multi-device
 
     @field_validator("otp")
     @classmethod
@@ -47,6 +48,7 @@ class RegisterEmailRequest(BaseModel):
     email: EmailStr
     password: str
     name: str
+    device_id: str | None = None   # identifiant du device pour le multi-device
 
     @field_validator("password")
     @classmethod
@@ -67,10 +69,16 @@ class RegisterEmailRequest(BaseModel):
 class LoginEmailRequest(BaseModel):
     email: EmailStr
     password: str
+    device_id: str | None = None   # identifiant du device pour le multi-device
 
 
 # ── Refresh Token ─────────────────────────────────────────────────────────────
 class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    """Body pour POST /auth/logout — révocation d'une session."""
     refresh_token: str
 
 
@@ -93,6 +101,15 @@ class AuthResponse(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     user: UserInToken
+    device_id: str | None = None   # device enregistré pour cette session
+
+
+class RefreshResponse(BaseModel):
+    """Réponse de POST /auth/refresh après rotation du token."""
+    success: bool = True
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
 
 
 # ── Réponse erreur standard ───────────────────────────────────────────────────

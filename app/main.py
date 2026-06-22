@@ -7,6 +7,7 @@ En production : les migrations sont gérées par Alembic.
 En développement : create_tables() peut créer les tables au démarrage
                    si CREATE_TABLES_ON_STARTUP=true dans .env.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -16,6 +17,8 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.redis import get_redis, close_redis
+from app.core.middlewares import setup_rate_limiting
+from app.websocket.queue_ws import ws_manager
 
 # Import explicite des modèles — obligatoire pour que Base.metadata
 # connaisse toutes les tables avant toute opération DB
@@ -36,33 +39,49 @@ async def lifespan(app: FastAPI):
     En production, NE PAS utiliser create_tables().
     Utiliser : docker-compose exec api alembic upgrade head
     """
+    listener_task: asyncio.Task | None = None
+
     logger.info("=" * 50)
     logger.info("TONDE API — Démarrage")
     logger.info(f"Environnement : {settings.ENVIRONMENT}")
     logger.info(f"Version       : {settings.APP_VERSION}")
     logger.info("=" * 50)
 
-    # create_tables() uniquement en développement si flag activé
-    if settings.CREATE_TABLES_ON_STARTUP:
-        from app.core.database import create_tables
-        await create_tables()
-        logger.info("Base de données — Tables créées (mode dev)")
-    else:
-        logger.info("Base de données — Utiliser 'alembic upgrade head' pour les migrations")
+    try:
+        # create_tables() uniquement en développement si flag activé
+        if settings.CREATE_TABLES_ON_STARTUP:
+            from app.core.database import create_tables
+            await create_tables()
+            logger.info("Base de données — Tables créées (mode dev)")
+        else:
+            logger.info("Base de données — Utiliser 'alembic upgrade head' pour les migrations")
 
-    # Vérifier la connexion Redis
-    redis = await get_redis()
-    await redis.ping()
-    logger.info("Redis — Connexion établie")
+        # Vérifier la connexion Redis
+        redis = await get_redis()
+        await redis.ping()
+        logger.info("Redis — Connexion établie")
 
-    logger.info(f"API prête sur http://localhost:{settings.APP_PORT}")
-    logger.info(f"Documentation : http://localhost:{settings.APP_PORT}/docs")
+        # Démarrer le listener Redis Pub/Sub en tâche asyncio de fond
+        # Reçoit les événements de toutes les orgs via psubscribe("tonde:events:*")
+        listener_task = asyncio.create_task(ws_manager.start_redis_listener())
+        app.state.redis_listener_task = listener_task
+        logger.info("Redis Pub/Sub — Listener démarré en tâche de fond")
 
-    yield  # L'app tourne ici
+        logger.info(f"API prête sur http://localhost:{settings.APP_PORT}")
+        logger.info(f"Documentation : http://localhost:{settings.APP_PORT}/docs")
 
-    # Arrêt propre
-    await close_redis()
-    logger.info("TONDE API — Arrêt propre")
+        yield  # L'app tourne ici
+
+    finally:
+        if listener_task is not None:
+            listener_task.cancel()
+            try:
+                await listener_task
+            except asyncio.CancelledError:
+                logger.info("Redis Pub/Sub — Listener arrêté")
+
+        await close_redis()
+        logger.info("TONDE API — Arrêt propre")
 
 
 # ── Création de l'app FastAPI ─────────────────────────────────────────────────
@@ -84,6 +103,9 @@ L'OTP de test en développement est toujours **123456**
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+# Rate limiting — doit être appelé avant add_middleware et include_router
+setup_rate_limiting(app)
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────

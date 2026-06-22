@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_user, get_current_agent, get_ws_user
+from app.core.middlewares import limiter
 from app.models.user import User
 from app.schemas.ticket import CreateTicketRequest, CallNextRequest
 from app.services.ticket_service import TicketService
@@ -101,6 +102,7 @@ async def call_next(
     service = TicketService(db)
     result = await service.call_next(
         agency_id=body.agency_id,
+        service_id=body.service_id,
         counter_id=body.counter_id,
         counter_name=body.counter_name,
         org_id=current_user.org_id,
@@ -169,6 +171,7 @@ async def return_to_queue(
 # ── WebSocket endpoints ───────────────────────────────────────────────────────
 
 @router.websocket("/ws/queue/{ticket_id}")
+@limiter.limit("10/minute")
 async def websocket_queue(
     websocket: WebSocket,
     ticket_id: str,
@@ -215,6 +218,7 @@ async def websocket_queue(
 
 
 @router.websocket("/ws/counter/{counter_id}")
+@limiter.limit("10/minute")
 async def websocket_counter(
     websocket: WebSocket,
     counter_id: str,
