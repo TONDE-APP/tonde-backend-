@@ -65,5 +65,6 @@ class QueueUpdateEvent(BaseModel):
 class CallNextRequest(BaseModel):
     """Requête du guichetier pour appeler le prochain ticket."""
     agency_id: str
+    service_id: str   # File à cibler — chaque service a sa propre file Redis
     counter_id: str
     counter_name: str

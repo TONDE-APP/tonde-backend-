@@ -110,3 +110,70 @@ Les modules suivants sont référencés dans les modèles mais pas encore créé
 - `analytics/` — stats et reporting
 
 Suivre le même pattern : `model → schema → service → router`.
+
+---
+
+## Mises à jour Sprint 1 — Structure réelle du projet
+
+### Modules déjà implémentés (état actuel)
+
+```
+app/
+├── models/
+│   ├── organization.py   ✅ Créé
+│   ├── agency.py         ✅ Créé (sera renommé branch.py en Sprint 2)
+│   ├── counter.py        ✅ Créé
+│   ├── employee.py       ✅ Créé
+│   ├── user.py           ✅ Créé
+│   ├── ticket.py         ✅ Créé
+│   └── refresh_token.py  🔜 À créer — TASK-02
+├── schemas/
+│   ├── auth.py           ✅ Créé
+│   ├── agency.py         ✅ Créé
+│   ├── counter.py        ✅ Créé
+│   ├── employee.py       ✅ Créé
+│   ├── organization.py   ✅ Créé
+│   └── ticket.py         ✅ Créé
+├── services/
+│   ├── auth_service.py       ✅ Créé
+│   ├── agency_service.py     ✅ Créé
+│   ├── counter_service.py    ✅ Créé
+│   ├── employee_service.py   ✅ Créé
+│   ├── organization_service.py ✅ Créé
+│   └── ticket_service.py     ✅ Créé
+├── routers/
+│   ├── auth.py           ✅ Créé
+│   ├── agencies.py       ✅ Créé
+│   ├── counters.py       ✅ Créé
+│   ├── employees.py      ✅ Créé
+│   ├── organizations.py  ✅ Créé
+│   └── tickets.py        ✅ Créé
+├── websocket/
+│   ├── queue_ws.py       ✅ Créé (listener non branché — TASK-05)
+│   └── events.py         ✅ Créé
+└── core/
+    ├── config.py         ✅ Créé
+    ├── database.py       ✅ Créé
+    ├── deps.py           ✅ Créé
+    ├── redis.py          ✅ Créé
+    ├── security.py       ✅ Créé
+    └── middlewares.py    🔜 À créer — TASK-06
+```
+
+### Clé Redis officielle (après TASK-04)
+
+```
+tonde:{org_id}:{agency_id}:{service_id}:queue   → file d'attente (Sorted Set)
+tonde:otp:{phone}                                → OTP hashé (TTL 5 min)
+tonde:otp_attempts:{phone}                       → compteur tentatives OTP
+tonde:cache:{key}                                → cache général
+tonde:events:{org_id}                            → canal Redis Pub/Sub
+```
+
+### Modules Sprint 2 (ne pas implémenter avant validation Sprint 1)
+
+- `app/models/user_organization.py` — table pivot User ↔ Organization (Décision 7)
+- `app/models/branch.py` — renommage de agency.py (Décision 8)
+- `app/services/notification_service.py` — SMS + FCM
+- `app/services/analytics_service.py` — collecte de données
+- `app/models/queue_log.py` — audit trail des transitions

@@ -11,7 +11,7 @@ psycopg2-binary==2.9.9    # Driver PostgreSQL (fallback sync pour Alembic offlin
 # ── Authentification & Sécurité ───────────────────────────────────────────────
 python-jose[cryptography]==3.3.0  # JWT
 passlib[bcrypt]==1.7.4            # Hachage bcrypt
-bcrypt==4.0.1                     # Version compatible avec passlib 1.7.4
+bcrypt==4.0.1                     # Épinglé — bcrypt 5.x incompatible avec passlib 1.7.4
 python-multipart==0.0.9           # Formulaires multipart
 
 # ── Cache & Temps réel ────────────────────────────────────────────────────────
