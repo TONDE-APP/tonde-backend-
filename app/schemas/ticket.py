@@ -55,7 +55,7 @@ class QueueUpdateEvent(BaseModel):
     type: str                     # "queue_update", "your_turn", "absent_warning"
     ticket_id: str
     ticket_number: str
-    current_number: str           # Numéro actuellement servi dans la salle
+    current_called_number: str    # Numéro actuellement servi dans la salle (harmonisé avec events.py)
     position: int
     total_in_queue: int
     estimated_wait_minutes: int

@@ -1,5 +1,5 @@
 """
-Modèle RefreshToken — Table 'refresh_tokens' dans PostgreSQL.
+RefreshToken model for persistent session management.
 
 Permet la révocation de session, la rotation de token et le support multi-device.
 Le token JWT brut n'est jamais stocké — uniquement son SHA-256.
@@ -12,7 +12,7 @@ Architecture :
 """
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, ForeignKey, Index, UniqueConstraint
+from sqlalchemy import String, DateTime, ForeignKey, Index
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
 
@@ -20,7 +20,7 @@ from app.core.database import Base
 class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
 
-    # ── Identifiant ───────────────────────────────────────────
+    # ── Identifiant ─────────────────────────────────────────────
     id: Mapped[str] = mapped_column(
         String(36),
         primary_key=True,

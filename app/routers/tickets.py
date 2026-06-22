@@ -22,13 +22,13 @@ router = APIRouter()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-def _get_org_id(current_user: User) -> str:
+def _get_org_id(current_user: User) -> str | None:
     """
     Retourne l'org_id de l'utilisateur.
-    Pour les clients sans org, utilise l'user_id comme namespace
-    (sera revu quand les clients seront liés à une org via le ticket).
+    Pour les clients sans org, retourne None pour que le service
+    puisse récupérer l'org depuis l'agence lors de la création de ticket.
     """
-    return current_user.org_id or current_user.id
+    return current_user.org_id
 
 
 # ── REST endpoints ────────────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ async def call_next(
     """
     Le guichetier appelle le prochain ticket de la file.
     Nécessite le rôle AGENT, SUPERVISOR, ADMIN_AGENCY, ADMIN_ORG ou SUPER_ADMIN.
-    Notifie le client en temps réel via WebSocket.
+    Notifie le client en temps réel via WebSocket (multi-instance via Redis Pub/Sub).
     """
     if not current_user.org_id:
         from fastapi import HTTPException, status
@@ -109,16 +109,25 @@ async def call_next(
     )
 
     # Notifier le client en temps réel si le ticket a été trouvé
+    # Utiliser publish_event() pour supporter le multi-instance via Redis Pub/Sub
     if result.get("success"):
-        await ws_manager.notify_your_turn(
-            ticket_id=result["ticket_id"],
-            ticket_number=result["ticket_number"],
-            counter_name=body.counter_name,
-        )
-        await ws_manager.broadcast_to_agency(body.agency_id, {
-            "type": "queue_called",
+        org_id = current_user.org_id or "public"
+        
+        # Événement "votre tour" pour le client concerné
+        await ws_manager.publish_event(org_id, {
+            "type": "your_turn",
+            "ticket_id": result["ticket_id"],
+            "ticket_number": result["ticket_number"],
+            "counter_name": body.counter_name,
+            "message": f"Présentez-vous au {body.counter_name}",
+        })
+        
+        # Événement "numéro appelé" pour toute la salle d'attente
+        await ws_manager.publish_event(org_id, {
+            "type": "ticket_called",
             "called_number": result["ticket_number"],
             "counter_name": body.counter_name,
+            "agency_id": body.agency_id,
         })
 
     return result
@@ -185,24 +194,50 @@ async def websocket_queue(
     Le client se connecte après avoir pris un ticket.
     Il reçoit les mises à jour de position automatiquement.
 
+    Sécurité :
+    - Vérifie que le ticket appartient bien à l'utilisateur
+    - Vérifie que l'agency_id correspond à celui du ticket
+
     URL Flutter :
         ws://api.tonde.app/api/v1/tickets/ws/queue/$ticketId
         ?agency_id=$agencyId&token=$accessToken
     """
+    from app.core.security import verify_token
+    from app.models.ticket import Ticket, TicketStatus
+    from sqlalchemy import select
+    
     # Authentifier via le token JWT en query param
-    user_id = None
-    try:
-        from app.core.security import verify_token
-        user_id = verify_token(token, token_type="access")
-    except Exception:
-        pass
-
+    user_id = verify_token(token, token_type="access")
     if not user_id:
         await websocket.close(code=4001, reason="Token invalide")
         return
 
+    # Vérifier que le ticket existe et appartient à cet utilisateur
+    async with db as session:
+        result = await session.execute(
+            select(Ticket).where(Ticket.id == ticket_id)
+        )
+        ticket = result.scalar_one_or_none()
+        
+        if not ticket:
+            await websocket.close(code=4004, reason="Ticket introuvable")
+            return
+        
+        # Vérifier l'appartenance du ticket
+        if ticket.user_id != user_id:
+            await websocket.close(code=4003, reason="Accès non autorisé à ce ticket")
+            return
+        
+        # Vérifier que l'agence correspond
+        if ticket.agency_id != agency_id:
+            await websocket.close(code=4004, reason="Agence incohérente")
+            return
+        
+        # Récupérer l'org_id pour le listener Redis multi-instance
+        ticket_org_id = ticket.org_id or "public"
+
     await ws_manager.connect_client(websocket, ticket_id, agency_id)
-    logger.info(f"WS connecté — ticket={ticket_id} | user={user_id}")
+    logger.info(f"WS connecté — ticket={ticket_id} | user={user_id} | org={ticket_org_id}")
 
     try:
         await websocket.send_text('{"type": "connected", "message": "Suivi activé"}')
@@ -229,27 +264,49 @@ async def websocket_counter(
     WebSocket pour le guichetier desktop.
     Reçoit les notifications en temps réel (nouveau ticket, annulation, etc.).
     Nécessite un token valide avec rôle AGENT minimum.
+    
+    Sécurité :
+    - Vérifie que le counter_id appartient à l'organisation de l'agent
     """
+    from app.core.security import verify_token
+    from app.models.user import UserRole
+    from app.models.counter import Counter
+    from sqlalchemy import select
+    
     # Authentifier et vérifier le rôle
     try:
-        from app.core.security import verify_token
-        from app.models.user import UserRole
-        from sqlalchemy import select
-        from app.models.user import User as UserModel
-
         user_id = verify_token(token, token_type="access")
         if not user_id:
             raise ValueError("Token invalide")
 
         async with db as session:
             result = await session.execute(
-                select(UserModel).where(UserModel.id == user_id)
+                select(User).where(User.id == user_id)
             )
             user = result.scalar_one_or_none()
 
         if not user or user.role == UserRole.CLIENT:
             await websocket.close(code=4003, reason="Accès réservé aux agents")
             return
+        
+        # Vérifier que l'utilisateur a une org
+        if not user.org_id:
+            await websocket.close(code=4003, reason="Agent sans organisation")
+            return
+        
+        # Vérifier que le counter appartient à l'organisation de l'agent
+        async with db as session:
+            result = await session.execute(
+                select(Counter).where(
+                    Counter.id == counter_id,
+                    Counter.org_id == user.org_id
+                )
+            )
+            counter = result.scalar_one_or_none()
+            
+            if not counter:
+                await websocket.close(code=4004, reason="Guichet introuvable dans votre organisation")
+                return
 
     except Exception as e:
         logger.warning(f"WS counter auth échoué: {e}")
@@ -257,7 +314,7 @@ async def websocket_counter(
         return
 
     await ws_manager.connect_counter(websocket, counter_id)
-    logger.info(f"WS guichet connecté — counter={counter_id} | agent={user_id}")
+    logger.info(f"WS guichet connecté — counter={counter_id} | agent={user_id} | org={user.org_id}")
 
     try:
         await websocket.send_text('{"type": "connected", "message": "Guichet connecté"}')

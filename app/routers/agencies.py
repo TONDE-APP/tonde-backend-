@@ -2,7 +2,7 @@
 Router Agencies (Branches) — /api/v1/agencies
 Aucune logique métier ici, tout délègue à AgencyService.
 """
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -20,7 +20,6 @@ router = APIRouter()
 
 def _require_agency_admin(current_user: User) -> User:
     """Vérifie que l'utilisateur a un rôle d'administration d'agence ou supérieur."""
-    from fastapi import HTTPException
     allowed = (
         UserRole.ADMIN_AGENCY,
         UserRole.ADMIN_ORG,
@@ -28,20 +27,40 @@ def _require_agency_admin(current_user: User) -> User:
     )
     if current_user.role not in allowed:
         raise HTTPException(
-            status_code=403,
+            status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "FORBIDDEN", "message": "Accès réservé aux administrateurs"}
         )
     return current_user
 
 
-def _get_caller_org_id(current_user: User) -> str | None:
+def _check_org_access(current_user: User, target_org_id: str) -> None:
     """
-    Retourne org_id de l'appelant.
-    super_admin → None (pas de restriction d'org).
+    Vérifie que l'utilisateur peut agir sur l'organisation cible.
+    
+    Règles:
+    - SUPER_ADMIN: peut agir sur toutes les orgs
+    - ADMIN_ORG: peut agir sur sa propre org uniquement
+    - ADMIN_AGENCY: ne peut PAS créer d'agences dans d'autres orgs (escalade de privilèges)
     """
     if current_user.role == UserRole.SUPER_ADMIN:
-        return None
-    return current_user.org_id
+        return  # Accès total
+    
+    if current_user.role == UserRole.ADMIN_ORG:
+        if current_user.org_id != target_org_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "FORBIDDEN", "message": "Vous ne pouvez agir que sur votre propre organisation"}
+            )
+        return
+    
+    # ADMIN_AGENCY ne devrait pas pouvoir créer/modifier des agences dans d'autres orgs
+    if current_user.role == UserRole.ADMIN_AGENCY:
+        if current_user.org_id != target_org_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "FORBIDDEN", "message": "Vous ne pouvez gérer que les agences de votre organisation"}
+            )
+        return
 
 
 @router.post("/{org_id}/agencies", status_code=201)
@@ -52,8 +71,9 @@ async def create_agency(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     _require_agency_admin(current_user)
+    _check_org_access(current_user, org_id)
     service = AgencyService(db)
-    result = await service.create(org_id, body, _get_caller_org_id(current_user))
+    result = await service.create(org_id, body, current_user.org_id)
     return {"success": True, "data": result, "message": "Agence créée"}
 
 
@@ -67,9 +87,10 @@ async def list_agencies(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     _require_agency_admin(current_user)
+    _check_org_access(current_user, org_id)
     service = AgencyService(db)
     result = await service.list(
-        caller_org_id=_get_caller_org_id(current_user),
+        caller_org_id=current_user.org_id,
         org_id=org_id,
         page=page,
         page_size=page_size,
@@ -86,8 +107,9 @@ async def get_agency(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     _require_agency_admin(current_user)
+    _check_org_access(current_user, org_id)
     service = AgencyService(db)
-    result = await service.get_by_id(agency_id, _get_caller_org_id(current_user))
+    result = await service.get_by_id(agency_id, current_user.org_id)
     return {"success": True, "data": result}
 
 
@@ -100,8 +122,9 @@ async def update_agency(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     _require_agency_admin(current_user)
+    _check_org_access(current_user, org_id)
     service = AgencyService(db)
-    result = await service.update(agency_id, body, _get_caller_org_id(current_user))
+    result = await service.update(agency_id, body, current_user.org_id)
     return {"success": True, "data": result, "message": "Agence mise à jour"}
 
 
@@ -113,6 +136,7 @@ async def delete_agency(
     current_user: User = Depends(get_current_user),
 ) -> dict:
     _require_agency_admin(current_user)
+    _check_org_access(current_user, org_id)
     service = AgencyService(db)
-    await service.delete(agency_id, _get_caller_org_id(current_user))
+    await service.delete(agency_id, current_user.org_id)
     return {"success": True, "message": "Agence désactivée"}
