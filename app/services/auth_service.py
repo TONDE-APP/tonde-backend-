@@ -71,6 +71,10 @@ class AuthService:
         """
         L'utilisateur entre son numéro → reçoit un OTP par SMS.
 
+        Protections :
+          - Max 3 demandes SMS par numéro par minute (anti-spam SMS)
+          - Numéro bloqué si trop d'échecs OTP précédents
+
         En développement (ENVIRONMENT=development) :
           - L'OTP est toujours 123456
           - Aucun SMS n'est envoyé
@@ -78,6 +82,9 @@ class AuthService:
         Returns:
             Dict avec success, message, expires_in_seconds
             En développement : inclut dev_otp pour les tests
+
+        Raises:
+            HTTPException 429: Trop de demandes SMS ou numéro bloqué
         """
         phone = data.phone
 
@@ -105,6 +112,11 @@ class AuthService:
         Crée automatiquement le compte si c'est le premier login.
         Persiste le refresh token en base de données.
 
+        Protections :
+          - Numéro bloqué si déjà trop d'échecs → 429 immédiat
+          - Max OTP_MAX_ATTEMPTS tentatives par code (défaut 5)
+          - Blocage 15 min du numéro après épuisement des tentatives
+
         Args:
             data: phone + otp saisi par l'utilisateur
 
@@ -113,7 +125,7 @@ class AuthService:
 
         Raises:
             HTTPException 400: OTP expiré ou invalide
-            HTTPException 429: Trop de tentatives
+            HTTPException 429: Numéro bloqué ou trop de tentatives
         """
         phone = data.phone
         otp = data.otp
@@ -122,11 +134,16 @@ class AuthService:
         if not stored_hash:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "OTP_EXPIRED", "message": "Le code OTP a expiré. Demandez un nouveau code."},
+                detail={
+                    "code": "OTP_EXPIRED",
+                    "message": "Le code OTP a expiré. Demandez un nouveau code en renvoyant votre numéro.",
+                },
             )
 
         attempts = await increment_otp_attempts(phone)
         if attempts > settings.OTP_MAX_ATTEMPTS:
+            # Épuisement total → bloquer le numéro 15 minutes
+            await block_phone(phone)
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail={"code": "TOO_MANY_ATTEMPTS", "message": "Trop de tentatives. Demandez un nouveau code."},
@@ -136,8 +153,13 @@ class AuthService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={
-                    "code": "INVALID_OTP",
-                    "message": f"Code incorrect. Tentative {attempts}/{settings.OTP_MAX_ATTEMPTS}",
+                    "code": "PHONE_BLOCKED",
+                    "message": (
+                        f"Trop de tentatives incorrectes. "
+                        f"Ce numéro est bloqué pendant 15 minutes. "
+                        f"Si vous n'avez pas demandé ce code, ignorez ce message."
+                    ),
+                    "retry_after_seconds": PHONE_BLOCK_SECONDS,
                 },
             )
 

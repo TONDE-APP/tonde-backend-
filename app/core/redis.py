@@ -103,6 +103,61 @@ async def delete_otp(phone: str) -> None:
     await r.delete(f"tonde:otp:{phone}", f"tonde:otp_attempts:{phone}")
 
 
+# ── Helpers Rate Limiting / Blocage ──────────────────────────────────────────
+PHONE_BLOCK_SECONDS = 15 * 60       # 15 minutes de blocage après trop d'échecs
+PHONE_REGISTER_WINDOW = 60          # Fenêtre 1 minute pour register/phone
+PHONE_REGISTER_MAX = 3              # Max 3 demandes de SMS par numéro / minute
+
+
+async def is_phone_blocked(phone: str) -> tuple[bool, int]:
+    """
+    Vérifie si un numéro est en cooldown suite à trop d'échecs OTP.
+
+    Returns:
+        (True, seconds_remaining) si bloqué
+        (False, 0) si libre
+    """
+    r = await get_redis()
+    ttl = await r.ttl(f"tonde:blocked:{phone}")
+    if ttl > 0:
+        return True, ttl
+    return False, 0
+
+
+async def block_phone(phone: str) -> None:
+    """
+    Bloque un numéro pour PHONE_BLOCK_SECONDS secondes.
+    Appelé après OTP_MAX_ATTEMPTS échecs consécutifs.
+    """
+    r = await get_redis()
+    await r.setex(f"tonde:blocked:{phone}", PHONE_BLOCK_SECONDS, "1")
+    logger.warning(f"[SECURITY] Numéro bloqué 15 min suite à trop d'échecs OTP: {phone}")
+
+
+async def increment_register_attempts(phone: str) -> int:
+    """
+    Compteur d'envois de SMS pour un numéro sur la fenêtre glissante.
+    Protège contre le spam de SMS (coût Africa's Talking).
+
+    Returns:
+        Nombre de tentatives dans la fenêtre courante
+    """
+    r = await get_redis()
+    key = f"tonde:sms_attempts:{phone}"
+    count = await r.incr(key)
+    if count == 1:
+        # Première tentative → démarrer le TTL
+        await r.expire(key, PHONE_REGISTER_WINDOW)
+    return count
+
+
+async def get_register_attempts(phone: str) -> int:
+    """Retourne le nombre d'envois SMS dans la fenêtre courante."""
+    r = await get_redis()
+    val = await r.get(f"tonde:sms_attempts:{phone}")
+    return int(val) if val else 0
+
+
 # ── Helpers File d'attente ────────────────────────────────────────────────────
 def _queue_key(org_id: str, agency_id: str, service_id: str) -> str:
     """

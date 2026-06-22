@@ -27,10 +27,12 @@ DEV_OTP_HASH = hashlib.sha256(DEV_OTP.encode()).hexdigest()
 @pytest.mark.asyncio
 async def test_register_phone_returns_success(auth_service):
     """En dev, register_phone retourne success avec expires_in_seconds."""
-    with patch("app.services.auth_service.save_otp", new_callable=AsyncMock):
-        result = await auth_service.register_phone(
-            RegisterPhoneRequest(phone="+25779123456")
-        )
+    with patch("app.services.auth_service.is_phone_blocked", new_callable=AsyncMock, return_value=(False, 0)):
+        with patch("app.services.auth_service.increment_register_attempts", new_callable=AsyncMock, return_value=1):
+            with patch("app.services.auth_service.save_otp", new_callable=AsyncMock):
+                result = await auth_service.register_phone(
+                    RegisterPhoneRequest(phone="+25779123456")
+                )
 
     assert result["success"] is True
     assert result["otp_sent"] is True
@@ -76,11 +78,12 @@ async def test_verify_otp_expired_raises_400(auth_service):
     """OTP expiré (absent de Redis) → HTTP 400."""
     from fastapi import HTTPException
 
-    with patch("app.services.auth_service.get_otp", new_callable=AsyncMock, return_value=None):
-        with pytest.raises(HTTPException) as exc_info:
-            await auth_service.verify_otp(
-                VerifyOtpRequest(phone="+25779111222", otp="123456")
-            )
+    with patch("app.services.auth_service.is_phone_blocked", new_callable=AsyncMock, return_value=(False, 0)):
+        with patch("app.services.auth_service.get_otp", new_callable=AsyncMock, return_value=None):
+            with pytest.raises(HTTPException) as exc_info:
+                await auth_service.verify_otp(
+                    VerifyOtpRequest(phone="+25779111222", otp="123456")
+                )
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["code"] == "OTP_EXPIRED"
@@ -101,11 +104,12 @@ async def test_verify_otp_invalid_raises_400(auth_service):
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail["code"] == "INVALID_OTP"
+    assert "attempts_remaining" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
 async def test_verify_otp_too_many_attempts_raises_429(auth_service):
-    """Trop de tentatives → HTTP 429."""
+    """Trop de tentatives (compteur > max) → HTTP 429 + blocage numéro."""
     from fastapi import HTTPException
 
     with patch("app.services.auth_service.get_otp", new_callable=AsyncMock, return_value=DEV_OTP_HASH):
@@ -116,7 +120,7 @@ async def test_verify_otp_too_many_attempts_raises_429(auth_service):
                 )
 
     assert exc_info.value.status_code == 429
-    assert exc_info.value.detail["code"] == "TOO_MANY_ATTEMPTS"
+    assert exc_info.value.detail["code"] == "PHONE_BLOCKED"
 
 
 # ── register_email ────────────────────────────────────────────────────────────

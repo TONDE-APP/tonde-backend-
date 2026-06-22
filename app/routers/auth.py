@@ -16,6 +16,7 @@ from app.schemas.auth import (
 from app.services.auth_service import AuthService
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/register/phone", summary="Inscription par téléphone — envoi OTP")
@@ -27,6 +28,12 @@ async def register_phone(
 ):
     """
     L'utilisateur entre son numéro → reçoit un SMS avec le code OTP.
+
+    Limites de sécurité :
+    - Max 5 requêtes/minute par IP (couche réseau)
+    - Max 3 demandes SMS/minute par numéro (couche service)
+    - Numéro bloqué 15 min après trop d'échecs OTP
+
     En développement, le code est toujours 123456.
     Limité à 5 requêtes/minute par IP pour éviter le flood SMS.
     """
@@ -43,6 +50,13 @@ async def verify_otp(
 ):
     """
     L'utilisateur entre le code OTP reçu par SMS.
+
+    Limites de sécurité :
+    - Max 10 requêtes/minute par IP (couche réseau)
+    - Max 5 tentatives par code OTP par numéro (couche service)
+    - Blocage 15 min du numéro après épuisement des tentatives
+    - Message clair indiquant le nombre de tentatives restantes
+
     Si correct → retourne access_token + refresh_token + profil.
     Limité à 5 requêtes/minute par IP contre le brute force OTP.
     """
