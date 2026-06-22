@@ -181,32 +181,53 @@ class QueueWebSocketManager:
 
     # ── Redis Pub/Sub ─────────────────────────────────────────────────────────
 
-    async def start_redis_listener(self, org_id: str) -> None:
+    async def start_redis_listener(self) -> None:
         """
-        Démarre l'écoute des événements Redis Pub/Sub pour une organisation.
+        Écoute tous les événements TONDE via Redis Pub/Sub (pattern subscribe).
 
-        Cette méthode doit être lancée en background task au démarrage.
-        Elle reçoit les événements publiés par le Queue Engine et les
-        diffuse aux clients WebSocket connectés.
+        Démarre en tâche asyncio de fond via asyncio.create_task() dans main.py.
+        Utilise psubscribe("tonde:events:*") pour capturer les événements de
+        toutes les organisations sans démarrer un listener par org_id.
 
-        TODO Sprint 1 : intégrer dans le lifespan de main.py
+        Se reconnecte automatiquement toutes les 5 secondes en cas d'erreur Redis.
+        Ne se termine jamais tant que l'application tourne.
         """
         from app.core.redis import get_redis
-        r = await get_redis()
-        channel = REDIS_EVENTS_CHANNEL.format(org_id=org_id)
 
-        async with r.pubsub() as pubsub:
-            await pubsub.subscribe(channel)
-            logger.info(f"Redis Pub/Sub — écoute sur {channel}")
+        while True:
+            try:
+                r = await get_redis()
+                async with r.pubsub() as pubsub:
+                    await pubsub.psubscribe("tonde:events:*")
+                    logger.info("Redis Pub/Sub — écoute active sur tonde:events:*")
 
-            async for message in pubsub.listen():
-                if message["type"] != "message":
-                    continue
-                try:
-                    event = json.loads(message["data"])
-                    await self._dispatch_event(event)
-                except Exception as e:
-                    logger.error(f"Erreur dispatch événement Redis: {e}", exc_info=True)
+                    async for message in pubsub.listen():
+                        # psubscribe produit des messages de type "pmessage"
+                        # Les types "subscribe"/"psubscribe" sont des confirmations à ignorer
+                        if message["type"] not in ("message", "pmessage"):
+                            continue
+
+                        data = message.get("data")
+                        if not data:
+                            continue
+
+                        try:
+                            event = json.loads(data)
+                            await self._dispatch_event(event)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Redis Pub/Sub — message JSON invalide: {e}")
+                        except Exception as e:
+                            logger.error(
+                                f"Redis Pub/Sub — erreur dispatch événement: {e}",
+                                exc_info=True,
+                            )
+
+            except Exception as e:
+                logger.error(
+                    f"Redis Pub/Sub — déconnecté: {e}. Reconnexion dans 5s...",
+                    exc_info=True,
+                )
+                await asyncio.sleep(5)
 
     async def _dispatch_event(self, event: dict) -> None:
         """
