@@ -19,3 +19,4 @@ from app.models.ticket import (                   # noqa: F401
     PRIORITY_SCORES,
     ALLOWED_TRANSITIONS,
 )
+from app.models.refresh_token import RefreshToken  # noqa: F401
