@@ -7,6 +7,7 @@ En production : les migrations sont gérées par Alembic.
 En développement : create_tables() peut créer les tables au démarrage
                    si CREATE_TABLES_ON_STARTUP=true dans .env.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -25,6 +26,7 @@ from app.core.redis import get_redis, close_redis
 import app.models  # noqa: F401
 
 from app.routers import auth, tickets, organizations, agencies
+from app.websocket.queue_ws import ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +64,36 @@ async def lifespan(app: FastAPI):
     await redis.ping()
     logger.info("Redis — Connexion établie")
 
+    # Démarrer le listener Redis Pub/Sub en arrière-plan
+    # Le listener écoute les événements multi-instance
+    # Pour le mode dev sans multi-instance, on peut le laisser démarrer
+    # car il ne nuit pas au fonctionnement mono-instance
+    redis_listener_task = None
+    try:
+        # En dev, on utilise un org_id par défaut pour le listener
+        # En prod, il faudrait un listener par organisation ou un listener global
+        listener_org_id = "global"
+        redis_listener_task = asyncio.create_task(
+            ws_manager.start_redis_listener(listener_org_id)
+        )
+        logger.info(f"Redis Pub/Sub — Listener démarré (org={listener_org_id})")
+    except Exception as e:
+        logger.warning(f"Redis Pub/Sub — Échec démarrage listener: {e}")
+
     logger.info(f"API prête sur http://localhost:{settings.APP_PORT}")
     logger.info(f"Documentation : http://localhost:{settings.APP_PORT}/docs")
 
     yield  # L'app tourne ici
 
-    # Arrêt propre
+    # Arrêt propre du listener
+    if redis_listener_task and not redis_listener_task.done():
+        redis_listener_task.cancel()
+        try:
+            await redis_listener_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Redis Pub/Sub — Listener arrêté")
+
     await close_redis()
     logger.info("TONDE API — Arrêt propre")
 

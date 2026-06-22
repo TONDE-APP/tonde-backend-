@@ -16,6 +16,7 @@ from sqlalchemy import select
 from fastapi import HTTPException, status
 
 from app.models.user import User
+from app.models.employee import Employee, EmployeeStatus
 from app.core.security import (
     hash_password, verify_password,
     create_access_token, create_refresh_token,
@@ -129,6 +130,7 @@ class AuthService:
           - Numéro bloqué si déjà trop d'échecs → 429 immédiat
           - Max OTP_MAX_ATTEMPTS tentatives par code (défaut 5)
           - Blocage 15 min du numéro après épuisement des tentatives
+          - Vérification que le compte n'est pas désactivé
 
         Args:
             data: phone + otp saisi par l'utilisateur
@@ -138,6 +140,7 @@ class AuthService:
 
         Raises:
             HTTPException 400: OTP expiré ou invalide
+            HTTPException 403: Compte désactivé
             HTTPException 429: Numéro bloqué ou trop de tentatives
         """
         phone = data.phone
@@ -223,6 +226,17 @@ class AuthService:
 
         # Chercher ou créer l'utilisateur
         user = await self._get_or_create_user_by_phone(phone)
+        
+        # Vérifier que le compte n'est pas désactivé
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "code": "ACCOUNT_DISABLED",
+                    "message": "Ce compte est désactivé. Veuillez contacter le support.",
+                },
+            )
+        
         user.is_verified = True
         user.last_login = datetime.now(timezone.utc)
         await self.db.commit()
@@ -298,15 +312,49 @@ class AuthService:
     async def refresh_token(self, refresh_token: str) -> dict:
         """
         Renouvelle l'access token à partir d'un refresh token valide.
+        
+        IMPORTANT: Recharge l'utilisateur pour vérifier qu'il n'est pas désactivé
+        ou suspendu (Employee).
 
         Raises:
             HTTPException 401: Refresh token invalide ou expiré
+            HTTPException 403: Compte désactivé ou suspendu
         """
         user_id = verify_token(refresh_token, token_type="refresh")
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"code": "INVALID_REFRESH_TOKEN", "message": "Token de rafraîchissement invalide"},
+            )
+
+        # Recharger l'utilisateur pour vérifier qu'il est toujours actif
+        result = await self.db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "USER_NOT_FOUND", "message": "Utilisateur introuvable"},
+            )
+        
+        # Vérifier si c'est un employé suspendu
+        emp_result = await self.db.execute(
+            select(Employee).where(
+                Employee.user_id == user_id,
+                Employee.status == EmployeeStatus.SUSPENDED
+            )
+        )
+        if emp_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "ACCOUNT_SUSPENDED", "message": "Votre compte est suspendu. Contactez votre administrateur."},
+            )
+        
+        # Vérifier que le compte n'est pas désactivé
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "ACCOUNT_DISABLED", "message": "Ce compte est désactivé."},
             )
 
         new_access_token = create_access_token(user_id)

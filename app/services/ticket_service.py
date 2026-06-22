@@ -37,7 +37,7 @@ class TicketService:
 
     # ── Créer un nouveau ticket ───────────────────────────────────────────────
     async def create_ticket(
-        self, data: CreateTicketRequest, user_id: str, org_id: str
+        self, data: CreateTicketRequest, user_id: str, org_id: str | None
     ) -> TicketResponse:
         """
         Crée un ticket et l'insère dans la file d'attente Redis.
@@ -46,6 +46,7 @@ class TicketService:
             data: Données de création (agency_id, service_id, priority)
             user_id: ID de l'utilisateur connecté
             org_id: ID de l'organisation (isolation multi-tenant)
+                    Peut être None pour les clients OTP sans affiliation
 
         Returns:
             TicketResponse avec numéro, position, ETA et QR token
@@ -55,8 +56,12 @@ class TicketService:
             HTTPException 403: Agence n'appartient pas à l'org
             HTTPException 409: Ticket actif déjà existant
         """
-        # Vérifier que l'agence existe et appartient à l'organisation
-        agency = await self._get_agency(data.agency_id, org_id)
+        # Vérifier que l'agence existe
+        # Pour les clients sans org (org_id=None), on récupère l'org_id depuis l'agence
+        agency = await self._get_agency_for_ticket_creation(data.agency_id, org_id)
+        
+        # Si le client n'a pas d'org, on utilise l'org de l'agence pour le ticket
+        ticket_org_id = org_id if org_id and org_id != user_id else agency.org_id
 
         if not agency.is_active or not agency.is_open:
             raise HTTPException(
@@ -65,7 +70,7 @@ class TicketService:
             )
 
         # Vérifier que le service existe dans cette agence
-        service = await self._get_service(data.service_id, data.agency_id, org_id)
+        service = await self._get_service(data.service_id, data.agency_id, ticket_org_id)
 
         # Un utilisateur ne peut avoir qu'un seul ticket actif par agence
         existing = await self._get_active_ticket(user_id, data.agency_id)
@@ -83,13 +88,13 @@ class TicketService:
         priority = TicketPriority(data.priority) if data.priority in TicketPriority._value2member_map_ else TicketPriority.STANDARD
         priority_score = PRIORITY_SCORES[priority]
 
-        # Persister le ticket
+        # Persister le ticket avec l'org_id de l'agence (peut être None si agence sans org)
         ticket = Ticket(
             number=ticket_number,
             prefix=service.ticket_prefix,
             sequence=sequence,
             user_id=user_id,
-            org_id=org_id,
+            org_id=ticket_org_id,
             agency_id=data.agency_id,
             service_id=data.service_id,
             priority=priority,
@@ -100,9 +105,10 @@ class TicketService:
         await self.db.commit()
         await self.db.refresh(ticket)
 
-        # Insérer dans la file Redis
-        position = await add_to_queue(org_id, data.agency_id, ticket.id, priority_score)
-        total = await get_queue_size(org_id, data.agency_id)
+        # Insérer dans la file Redis (utiliser org_id pour le namespace Redis)
+        redis_org_id = ticket_org_id or "public"
+        position = await add_to_queue(redis_org_id, data.agency_id, ticket.id, priority_score)
+        total = await get_queue_size(redis_org_id, data.agency_id)
 
         # Calculer l'ETA
         eta = max(0, (position - 1) * agency.avg_service_minutes)
@@ -110,7 +116,7 @@ class TicketService:
         ticket.estimated_wait_minutes = eta
         await self.db.commit()
 
-        logger.info(f"Ticket créé: {ticket_number} | org={org_id} | position={position} | ETA={eta}min")
+        logger.info(f"Ticket créé: {ticket_number} | org={ticket_org_id} | position={position} | ETA={eta}min")
 
         return TicketResponse(
             id=ticket.id,
@@ -382,6 +388,40 @@ class TicketService:
         ticket.status = new_status
 
     # ── Helpers privés ────────────────────────────────────────────────────────
+    async def _get_agency_for_ticket_creation(
+        self, agency_id: str, user_org_id: str | None
+    ) -> Agency:
+        """
+        Récupère une agence pour la création de ticket.
+        
+        Différence avec _get_agency : permet aux clients sans org (user_org_id=None ou =user_id)
+        de créer des tickets dans les agences publiques (org_id=NULL) ou affiliées.
+        """
+        # Si l'utilisateur a une org ou si c'est un agent, on vérifie l'appartenance
+        if user_org_id and user_org_id != "":
+            result = await self.db.execute(
+                select(Agency).where(
+                    Agency.id == agency_id,
+                    Agency.org_id == user_org_id,
+                )
+            )
+            agency = result.scalar_one_or_none()
+            if agency:
+                return agency
+        
+        # Sinon, pour les clients sans org, on cherche une agence existante
+        # (agence publique ou agence avec une org)
+        result = await self.db.execute(
+            select(Agency).where(Agency.id == agency_id)
+        )
+        agency = result.scalar_one_or_none()
+        if not agency:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"code": "AGENCY_NOT_FOUND", "message": "Agence introuvable"},
+            )
+        return agency
+
     async def _get_agency(self, agency_id: str, org_id: str) -> Agency:
         """Récupère une agence en vérifiant son appartenance à l'organisation."""
         result = await self.db.execute(
@@ -399,16 +439,18 @@ class TicketService:
         return agency
 
     async def _get_service(
-        self, service_id: str, agency_id: str, org_id: str
+        self, service_id: str, agency_id: str, org_id: str | None
     ) -> Service:
         """Récupère un service en vérifiant son appartenance à l'agence et l'org."""
-        result = await self.db.execute(
-            select(Service).where(
-                Service.id == service_id,
-                Service.agency_id == agency_id,
-                Service.org_id == org_id,
-            )
+        query = select(Service).where(
+            Service.id == service_id,
+            Service.agency_id == agency_id,
         )
+        # Si org_id est fourni, vérifier qu'il correspond
+        if org_id:
+            query = query.where(Service.org_id == org_id)
+        
+        result = await self.db.execute(query)
         service = result.scalar_one_or_none()
         if not service:
             raise HTTPException(
