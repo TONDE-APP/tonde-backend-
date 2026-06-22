@@ -8,7 +8,6 @@ Chaque dépendance vérifie :
   1. JWT valide et non expiré
   2. Utilisateur existant et actif en base
   3. Rôle suffisant pour l'action demandée
-  4. Statut Employee (si applicable)
 """
 import logging
 from fastapi import Depends, HTTPException, Query, status
@@ -19,7 +18,6 @@ from sqlalchemy import select
 from app.core.database import get_db
 from app.core.security import verify_token
 from app.models.user import User, UserRole
-from app.models.employee import Employee, EmployeeStatus
 
 logger = logging.getLogger(__name__)
 
@@ -41,52 +39,17 @@ async def _load_user(user_id: str, db: AsyncSession) -> User:
     """
     Charge un utilisateur depuis la DB et vérifie qu'il est actif.
 
-    Pour les utilisateurs qui sont aussi des employés, vérifie également
-    le statut Employee (suspendu = accès refusé).
-
     Raises:
         HTTPException 401: Utilisateur introuvable ou inactif
-        HTTPException 403: Employé suspendu
     """
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
 
-    if not user:
+    if not user or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "USER_NOT_FOUND", "message": "Utilisateur introuvable"},
+            detail={"code": "USER_NOT_FOUND", "message": "Utilisateur introuvable ou désactivé"},
         )
-    
-    # Vérifier si l'utilisateur est un employé et son statut
-    emp_result = await db.execute(
-        select(Employee).where(
-            Employee.user_id == user_id,
-            Employee.status != EmployeeStatus.INACTIVE
-        ).order_by(Employee.created_at.desc())
-    )
-    employee = emp_result.scalar_one_or_none()
-    
-    if employee:
-        # Employé trouvé — vérifier son statut
-        if employee.status == EmployeeStatus.SUSPENDED:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail={"code": "EMPLOYEE_SUSPENDED", "message": "Votre compte employé est suspendu. Contactez votre administrateur."},
-            )
-        
-        # Si l'utilisateur est un employé actif, utiliser le rôle de l'employé
-        # (Employee.role est la source de vérité pour le contexte organisationnel)
-        if employee.status == EmployeeStatus.ACTIVE:
-            user.role = employee.role
-            user.org_id = employee.org_id  # Mettre à jour org_id depuis Employee
-    
-    # Vérifier si le compte utilisateur global est actif
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "USER_DISABLED", "message": "Ce compte est désactivé"},
-        )
-    
     return user
 
 

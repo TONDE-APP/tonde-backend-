@@ -7,7 +7,6 @@ En production : les migrations sont gérées par Alembic.
 En développement : create_tables() peut créer les tables au démarrage
                    si CREATE_TABLES_ON_STARTUP=true dans .env.
 """
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -20,16 +19,12 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.redis import get_redis, close_redis
-from app.core.middlewares import setup_rate_limiting
-from app.websocket.queue_ws import ws_manager
 
 # Import explicite des modèles — obligatoire pour que Base.metadata
 # connaisse toutes les tables avant toute opération DB
 import app.models  # noqa: F401
 
 from app.routers import auth, tickets, organizations, agencies
-from app.websocket.queue_ws import ws_manager
-from app.routers import auth, tickets, organizations, agencies, counters, employees
 
 logger = logging.getLogger(__name__)
 
@@ -48,78 +43,33 @@ async def lifespan(app: FastAPI):
     En production, NE PAS utiliser create_tables().
     Utiliser : docker-compose exec api alembic upgrade head
     """
-    listener_task: asyncio.Task | None = None
-
     logger.info("=" * 50)
     logger.info("TONDE API — Démarrage")
     logger.info(f"Environnement : {settings.ENVIRONMENT}")
     logger.info(f"Version       : {settings.APP_VERSION}")
     logger.info("=" * 50)
 
-    try:
-        # create_tables() uniquement en développement si flag activé
-        if settings.CREATE_TABLES_ON_STARTUP:
-            from app.core.database import create_tables
-            await create_tables()
-            logger.info("Base de données — Tables créées (mode dev)")
-        else:
-            logger.info("Base de données — Utiliser 'alembic upgrade head' pour les migrations")
+    # create_tables() uniquement en développement si flag activé
+    if settings.CREATE_TABLES_ON_STARTUP:
+        from app.core.database import create_tables
+        await create_tables()
+        logger.info("Base de données — Tables créées (mode dev)")
+    else:
+        logger.info("Base de données — Utiliser 'alembic upgrade head' pour les migrations")
 
-        # Vérifier la connexion Redis
-        redis = await get_redis()
-        await redis.ping()
-        logger.info("Redis — Connexion établie")
-
-        # Démarrer le listener Redis Pub/Sub en tâche asyncio de fond
-        # Reçoit les événements de toutes les orgs via psubscribe("tonde:events:*")
-        listener_task = asyncio.create_task(ws_manager.start_redis_listener())
-        app.state.redis_listener_task = listener_task
-        logger.info("Redis Pub/Sub — Listener démarré en tâche de fond")
-
-        logger.info(f"API prête sur http://localhost:{settings.APP_PORT}")
-        logger.info(f"Documentation : http://localhost:{settings.APP_PORT}/docs")
-
-    # Démarrer le listener Redis Pub/Sub en arrière-plan
-    # Le listener écoute les événements multi-instance
-    # Pour le mode dev sans multi-instance, on peut le laisser démarrer
-    # car il ne nuit pas au fonctionnement mono-instance
-    redis_listener_task = None
-    try:
-        # En dev, on utilise un org_id par défaut pour le listener
-        # En prod, il faudrait un listener par organisation ou un listener global
-        listener_org_id = "global"
-        redis_listener_task = asyncio.create_task(
-            ws_manager.start_redis_listener(listener_org_id)
-        )
-        logger.info(f"Redis Pub/Sub — Listener démarré (org={listener_org_id})")
-    except Exception as e:
-        logger.warning(f"Redis Pub/Sub — Échec démarrage listener: {e}")
+    # Vérifier la connexion Redis
+    redis = await get_redis()
+    await redis.ping()
+    logger.info("Redis — Connexion établie")
 
     logger.info(f"API prête sur http://localhost:{settings.APP_PORT}")
     logger.info(f"Documentation : http://localhost:{settings.APP_PORT}/docs")
-        yield  # L'app tourne ici
 
-    finally:
-        if listener_task is not None:
-            listener_task.cancel()
-            try:
-                await listener_task
-            except asyncio.CancelledError:
-                logger.info("Redis Pub/Sub — Listener arrêté")
+    yield  # L'app tourne ici
 
-    # Arrêt propre du listener
-    if redis_listener_task and not redis_listener_task.done():
-        redis_listener_task.cancel()
-        try:
-            await redis_listener_task
-        except asyncio.CancelledError:
-            pass
-        logger.info("Redis Pub/Sub — Listener arrêté")
-
+    # Arrêt propre
     await close_redis()
     logger.info("TONDE API — Arrêt propre")
-        await close_redis()
-        logger.info("TONDE API — Arrêt propre")
 
 
 # ── Création de l'app FastAPI ─────────────────────────────────────────────────
@@ -142,8 +92,28 @@ L'OTP de test en développement est toujours **123456**
     lifespan=lifespan,
 )
 
-# Rate limiting — doit être appelé avant add_middleware et include_router
-setup_rate_limiting(app)
+# ── Rate limiting — handler 429 standardisé ───────────────────────────────────
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """Retourne une erreur 429 structurée quand la limite IP est dépassée."""
+    return JSONResponse(
+        status_code=429,
+        content={
+            "success": False,
+            "error": {
+                "code": "RATE_LIMIT_EXCEEDED",
+                "message": (
+                    "Trop de requêtes depuis votre adresse. "
+                    "Veuillez patienter avant de réessayer."
+                ),
+                "retry_after": getattr(exc, "retry_after", 60),
+            },
+        },
+        headers={"Retry-After": str(getattr(exc, "retry_after", 60))},
+    )
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
@@ -161,16 +131,6 @@ app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["
 app.include_router(tickets.router,       prefix="/api/v1/tickets",       tags=["🎫 Tickets"])
 app.include_router(organizations.router, prefix="/api/v1/organizations", tags=["🏢 Organizations"])
 app.include_router(agencies.router,      prefix="/api/v1/organizations", tags=["🏦 Agencies"])
-app.include_router(
-    counters.router,
-    prefix="/api/v1/organizations/{org_id}/agencies/{agency_id}/counters",
-    tags=["🪟 Counters"],
-)
-app.include_router(
-    employees.router,
-    prefix="/api/v1/organizations/{org_id}/employees",
-    tags=["👤 Employees"],
-)
 
 
 # ── Endpoints de base ─────────────────────────────────────────────────────────
