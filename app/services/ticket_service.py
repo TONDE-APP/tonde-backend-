@@ -47,7 +47,6 @@ class TicketService:
         self.db = db
 
     # ── Créer un nouveau ticket ───────────────────────────────────────────────
-    async def create_ticket(
         self, data: CreateTicketRequest, user_id: str, org_id: str | None
         self, data: CreateTicketRequest, user_id: str, org_id: str | None = None
     ) -> TicketResponse:
