@@ -455,6 +455,32 @@ POST /api/v1/tickets/{ticket_id}/transfer
 
 ---
 
+### S2-10 — Configuration File d'Attente
+
+**Priorité :** 🟡 Moyenne  
+**Branche :** `feat/agency-config`
+
+**Contexte :** Permettre aux admins de configurer les paramètres de la file.
+
+**Fichiers à créer :**
+- `app/schemas/agency_config.py`
+- `app/services/agency_config_service.py`
+
+**Endpoints :**
+```
+GET  /api/v1/agencies/{agency_id}/config
+PATCH /api/v1/agencies/{agency_id}/config
+```
+
+**Champs configurables :**
+- `max_daily_tickets`
+- `avg_service_minutes`
+- `operating_hours`
+- `max_wait_minutes_alert`
+- `enable_sms_reminders`
+
+---
+
 ## Règles Git Sprint 2
 
 ```bash
@@ -519,3 +545,128 @@ GET  /api/v1/sync/changes
 - Idempotence par client_action_id
 - Conflict detection et resolution
 - Optimistic UI sync
+
+---
+
+### S3-03 — Health Check Détaillé
+
+**Priorité :** 🟢 Basse  
+**Branche :** `feat/health-check`
+
+**Contexte :** Les ops ont besoin de monitoring détaillé pour Kubernetes/Prometheus.
+
+**Endpoints :**
+```
+GET  /health          # Basique
+GET  /health/ready    # Readiness probe
+GET  /health/live     # Liveness probe
+GET  /health/detailed # Métriques (admin)
+```
+
+**Métriques :**
+- DB latency
+- Redis latency
+- Active connections
+- Version, uptime
+
+---
+
+# TONDE — V1.5 Backend
+
+> V1.5 : Mobile Money, Paiements, Réservations, QR Code
+
+## Objectif V1.5
+
+Préparer la monétisation avec :
+- Paiements Mobile Money (M-Pesa, Airtel Money)
+- QR Code validation
+- Réservations advance
+
+---
+
+## Tâches V1.5
+
+### V1.5-01 — QR Code Validation
+
+**Priorité :** 🟠 Haute  
+**Branche :** `feat/qr-code-validation`
+
+**Contexte :** Permettre la validation de tickets via QR code scanné.
+
+**Endpoints :**
+```
+GET /api/v1/tickets/qr/{qr_token}
+```
+
+**Cas d'usage :**
+- Agent scanne QR pour appeler ticket
+- Client scanne son ticket pour voir position
+- Client scanne QR agence pour voir services
+
+---
+
+### V1.5-02 — Mobile Money Integration
+
+**Priorité :** 🟠 Haute  
+**Branche :** `feat/mobile-money`
+
+**Contexte :** Permettre les paiements Mobile Money (M-Pesa, Airtel Money).
+
+**Modèles à créer :**
+- `Payment`
+- `PaymentProvider`
+
+**Endpoints :**
+```
+POST /api/v1/payments/mobile-money/initiate
+POST /api/v1/payments/mobile-money/callback
+GET  /api/v1/payments/{payment_id}
+```
+
+**Providers supportés :**
+- M-Pesa (Safaricom)
+- Airtel Money
+
+---
+
+### V1.5-03 — Réservations Advance
+
+**Priorité :** 🟡 Moyenne  
+**Branche :** `feat/reservations`
+
+**Contexte :** Permettre de réserver un créneau à l'avance.
+
+**Modèle à créer :**
+- `Reservation`
+
+**Endpoints :**
+```
+POST /api/v1/reservations
+GET  /api/v1/reservations
+DELETE /api/v1/reservations/{id}
+```
+
+---
+
+### V1.5-04 — Paiement en Ligne (Stripe)
+
+**Priorité :** 🟡 Moyenne  
+**Branche :** `feat/stripe-payments`
+
+**Contexte :** Paiement par carte bancaire via Stripe.
+
+**Endpoints :**
+```
+POST /api/v1/payments/stripe/create-intent
+POST /api/v1/payments/stripe/webhook
+```
+
+---
+
+## Règles Git V1.5
+
+```bash
+# V1.5 commence après Sprint 3 complet
+# V1.5-01 peut commencer pendant Sprint 3 (indépendant)
+# V1.5-02 à V1.5-04 en parallèle après Sprint 3
+```
