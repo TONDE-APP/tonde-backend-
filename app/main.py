@@ -7,6 +7,7 @@ En production : les migrations sont gérées par Alembic.
 En développement : create_tables() peut créer les tables au démarrage
                    si CREATE_TABLES_ON_STARTUP=true dans .env.
 """
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -24,7 +25,8 @@ from app.core.redis import get_redis, close_redis
 # connaisse toutes les tables avant toute opération DB
 import app.models  # noqa: F401
 
-from app.routers import auth, tickets, organizations, agencies
+from app.routers import auth, tickets, organizations, agencies, counters, employees
+from app.websocket.queue_ws import ws_manager
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,11 @@ async def lifespan(app: FastAPI):
     redis = await get_redis()
     await redis.ping()
     logger.info("Redis — Connexion établie")
+
+    # Démarrer le listener Redis Pub/Sub en tâche asyncio de fond
+    # Écoute tonde:events:* — couvre toutes les orgs — se reconnecte auto en cas d'erreur
+    asyncio.create_task(ws_manager.start_redis_listener())
+    logger.info("Redis Pub/Sub — Listener démarré en tâche de fond")
 
     logger.info(f"API prête sur http://localhost:{settings.APP_PORT}")
     logger.info(f"Documentation : http://localhost:{settings.APP_PORT}/docs")
@@ -131,6 +138,16 @@ app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["
 app.include_router(tickets.router,       prefix="/api/v1/tickets",       tags=["🎫 Tickets"])
 app.include_router(organizations.router, prefix="/api/v1/organizations", tags=["🏢 Organizations"])
 app.include_router(agencies.router,      prefix="/api/v1/organizations", tags=["🏦 Agencies"])
+app.include_router(
+    counters.router,
+    prefix="/api/v1/organizations/{org_id}/agencies/{agency_id}/counters",
+    tags=["🏧 Counters"],
+)
+app.include_router(
+    employees.router,
+    prefix="/api/v1/organizations/{org_id}/employees",
+    tags=["👥 Employees"],
+)
 
 
 # ── Endpoints de base ─────────────────────────────────────────────────────────
