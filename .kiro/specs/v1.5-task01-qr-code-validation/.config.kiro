@@ -1,0 +1,7 @@
+sprint: v1.5
+task: V1.5-01
+title: QR Code Validation
+owner: à assigner
+priority: haute
+depends_on: S2-01
+status: backlog

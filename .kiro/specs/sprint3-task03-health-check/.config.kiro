@@ -1,0 +1,7 @@
+sprint: sprint3
+task: S3-03
+title: Health Check Détaillé
+owner: à assigner
+priority: basse
+depends_on: 
+status: backlog
