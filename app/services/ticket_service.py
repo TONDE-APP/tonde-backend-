@@ -30,6 +30,17 @@ from app.schemas.ticket import CreateTicketRequest, TicketResponse, TicketHistor
 
 logger = logging.getLogger(__name__)
 
+# Statuts considérés comme "actifs" — bloquent la création d'un nouveau ticket.
+# Règle MVP DÉCISION 1 : 1 seul ticket actif par utilisateur sur TOUTE la plateforme.
+ACTIVE_STATUSES: list[TicketStatus] = [
+    TicketStatus.WAITING,
+    TicketStatus.CALLED,
+    TicketStatus.SERVING,
+    TicketStatus.ABSENT,
+    TicketStatus.TRANSFERRED,
+    TicketStatus.INCOMPLETE,
+]
+
 
 class TicketService:
     def __init__(self, db: AsyncSession):
@@ -72,12 +83,21 @@ class TicketService:
         # Vérifier que le service existe dans cette agence
         service = await self._get_service(data.service_id, data.agency_id, ticket_org_id)
 
-        # Un utilisateur ne peut avoir qu'un seul ticket actif par agence
-        existing = await self._get_active_ticket(user_id, data.agency_id)
+        # Règle DÉCISION 1 : 1 seul ticket actif par utilisateur sur toute la plateforme
+        existing = await self._get_active_ticket(user_id)
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={"code": "TICKET_EXISTS", "message": "Vous avez déjà un ticket actif dans cette agence"},
+                detail={
+                    "code": "TICKET_ALREADY_ACTIVE",
+                    "message": (
+                        f"Vous avez déjà un ticket actif ({existing.number} — "
+                        f"statut : {existing.status.value}). "
+                        "Attendez qu'il soit terminé ou annulez-le avant d'en prendre un nouveau."
+                    ),
+                    "active_ticket_id": existing.id,
+                    "active_ticket_number": existing.number,
+                },
             )
 
         # Calculer le prochain numéro de séquence (réinitialisé chaque jour)
@@ -105,10 +125,10 @@ class TicketService:
         await self.db.commit()
         await self.db.refresh(ticket)
 
-        # Insérer dans la file Redis (utiliser ticket_org_id, ou "public" si None)
+        # Insérer dans la file Redis — segmentée par service (DÉCISION 5)
         redis_org_id = ticket_org_id or "public"
-        position = await add_to_queue(redis_org_id, data.agency_id, ticket.id, priority_score)
-        total = await get_queue_size(redis_org_id, data.agency_id)
+        position = await add_to_queue(redis_org_id, data.agency_id, data.service_id, ticket.id, priority_score)
+        total = await get_queue_size(redis_org_id, data.agency_id, data.service_id)
 
         # Calculer l'ETA
         eta = max(0, (position - 1) * agency.avg_service_minutes)
@@ -150,8 +170,8 @@ class TicketService:
                 detail={"code": "FORBIDDEN", "message": "Accès non autorisé à ce ticket"},
             )
 
-        position = await get_queue_position(org_id, ticket.agency_id, ticket.id)
-        total = await get_queue_size(org_id, ticket.agency_id)
+        position = await get_queue_position(org_id, ticket.agency_id, ticket.service_id, ticket.id)
+        total = await get_queue_size(org_id, ticket.agency_id, ticket.service_id)
 
         agency_result = await self.db.execute(
             select(Agency).where(Agency.id == ticket.agency_id, Agency.org_id == org_id)
@@ -191,7 +211,7 @@ class TicketService:
             )
 
         await self._transition(ticket, TicketStatus.CANCELLED)
-        await remove_from_queue(org_id, ticket.agency_id, ticket.id)
+        await remove_from_queue(org_id, ticket.agency_id, ticket.service_id, ticket.id)
         await self.db.commit()
 
         logger.info(f"Ticket annulé: {ticket.number} | user={user_id}")
@@ -199,13 +219,14 @@ class TicketService:
 
     # ── Appeler le prochain ticket (guichetier) ───────────────────────────────
     async def call_next(
-        self, agency_id: str, counter_id: str, counter_name: str, org_id: str
+        self, agency_id: str, service_id: str, counter_id: str, counter_name: str, org_id: str
     ) -> dict:
         """
-        Le guichetier appelle le prochain ticket de la file.
+        Le guichetier appelle le prochain ticket de la file du service.
 
         Args:
             agency_id: ID de l'agence du guichetier
+            service_id: ID du service dont appeler le prochain ticket (DÉCISION 5)
             counter_id: ID du guichet appelant
             counter_name: Nom affiché sur l'écran salle d'attente
             org_id: ID de l'organisation (isolation multi-tenant)
@@ -213,7 +234,7 @@ class TicketService:
         Returns:
             Dict avec ticket_id, ticket_number, user_id pour la notif WebSocket
         """
-        next_ticket_id = await get_next_ticket(org_id, agency_id)
+        next_ticket_id = await get_next_ticket(org_id, agency_id, service_id)
         if not next_ticket_id:
             return {"success": False, "message": "Aucun ticket en attente"}
 
@@ -224,7 +245,7 @@ class TicketService:
         ticket.counter_id = counter_id
         ticket.counter_name = counter_name
 
-        await remove_from_queue(org_id, agency_id, next_ticket_id)
+        await remove_from_queue(org_id, agency_id, service_id, next_ticket_id)
         await self.db.commit()
         await self.db.refresh(ticket)
 
@@ -296,9 +317,9 @@ class TicketService:
         ticket = await self._get_ticket_by_id(ticket_id, org_id)
         await self._transition(ticket, TicketStatus.WAITING)
 
-        # Remettre en file avec priorité standard (pénalité)
+        # Remettre en file avec priorité standard (pénalité) — service_id depuis le ticket
         priority_score = PRIORITY_SCORES[TicketPriority.STANDARD]
-        await add_to_queue(org_id, ticket.agency_id, ticket.id, priority_score)
+        await add_to_queue(org_id, ticket.agency_id, ticket.service_id, ticket.id, priority_score)
         await self.db.commit()
         return {"success": True, "ticket_id": ticket_id}
 
@@ -462,19 +483,23 @@ class TicketService:
             )
         return ticket
 
-    async def _get_active_ticket(
-        self, user_id: str, agency_id: str
-    ) -> Ticket | None:
-        """Vérifie si l'utilisateur a déjà un ticket actif dans cette agence."""
+    async def _get_active_ticket(self, user_id: str) -> Ticket | None:
+        """
+        Vérifie si l'utilisateur possède un ticket actif sur toute la plateforme.
+
+        Règle DÉCISION 1 : vérification globale, sans filtre sur agency_id.
+        Les statuts bloquants sont définis par ACTIVE_STATUSES.
+
+        Args:
+            user_id: ID de l'utilisateur à vérifier.
+
+        Returns:
+            Le ticket actif trouvé, ou None si l'utilisateur est libre.
+        """
         result = await self.db.execute(
             select(Ticket).where(
                 Ticket.user_id == user_id,
-                Ticket.agency_id == agency_id,
-                Ticket.status.in_([
-                    TicketStatus.WAITING,
-                    TicketStatus.CALLED,
-                    TicketStatus.SERVING,
-                ]),
+                Ticket.status.in_(ACTIVE_STATUSES),
             )
         )
         return result.scalar_one_or_none()

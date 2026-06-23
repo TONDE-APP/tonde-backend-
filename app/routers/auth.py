@@ -16,7 +16,6 @@ from app.schemas.auth import (
 from app.services.auth_service import AuthService
 
 router = APIRouter()
-limiter = Limiter(key_func=get_remote_address)
 
 
 @router.post("/register/phone", summary="Inscription par téléphone — envoi OTP")

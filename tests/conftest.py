@@ -67,7 +67,11 @@ async def db_session(db_engine):
 def mock_redis():
     """
     Mock complet du client Redis pour les tests.
-    Évite toute vraie connexion Redis.
+    Couvre toutes les fonctions utilisées par auth_service et ticket_service :
+      - get/setex/delete/incr : OTP, compteurs
+      - ttl : vérification TTL pour is_phone_blocked
+      - zadd/zrank/zcard/zrange/zrem : file d'attente tickets
+      - ping : health check
     """
     with patch("app.core.redis.get_redis") as mock:
         redis_mock = AsyncMock()
@@ -75,12 +79,15 @@ def mock_redis():
         redis_mock.setex = AsyncMock(return_value=True)
         redis_mock.delete = AsyncMock(return_value=1)
         redis_mock.incr = AsyncMock(return_value=1)
+        redis_mock.expire = AsyncMock(return_value=True)
+        redis_mock.ttl = AsyncMock(return_value=-2)   # -2 = clé absente (non bloqué)
         redis_mock.zadd = AsyncMock(return_value=1)
         redis_mock.zrank = AsyncMock(return_value=0)
         redis_mock.zcard = AsyncMock(return_value=1)
         redis_mock.zrange = AsyncMock(return_value=[])
         redis_mock.zrem = AsyncMock(return_value=1)
         redis_mock.ping = AsyncMock(return_value=True)
+        redis_mock.publish = AsyncMock(return_value=1)
         mock.return_value = redis_mock
         yield redis_mock
 

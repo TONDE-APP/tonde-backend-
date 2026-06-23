@@ -23,7 +23,7 @@ from app.core.security import (
 )
 from app.core.redis import (
     save_otp, get_otp, delete_otp,
-    increment_otp_attempts,
+    increment_otp_attempts, _hash_otp,
     is_phone_blocked, block_phone,
     increment_register_attempts, PHONE_REGISTER_MAX, PHONE_BLOCK_SECONDS,
 )
@@ -188,8 +188,8 @@ class AuthService:
                 },
             )
 
-        # Couche 4 — Comparer les OTP
-        if otp != stored_otp:
+        # Couche 4 — Comparer les hash SHA-256 (jamais les valeurs en clair)
+        if _hash_otp(otp) != stored_otp:
             remaining = settings.OTP_MAX_ATTEMPTS - attempts
             if remaining > 0:
                 raise HTTPException(
@@ -298,9 +298,10 @@ class AuthService:
     async def refresh_token(self, refresh_token: str) -> dict:
         """
         Renouvelle l'access token à partir d'un refresh token valide.
+        Recharge le user depuis la DB et vérifie qu'il est toujours actif.
 
         Raises:
-            HTTPException 401: Refresh token invalide ou expiré
+            HTTPException 401: Refresh token invalide, expiré, ou user désactivé
         """
         user_id = verify_token(refresh_token, token_type="refresh")
         if not user_id:
@@ -309,7 +310,23 @@ class AuthService:
                 detail={"code": "INVALID_REFRESH_TOKEN", "message": "Token de rafraîchissement invalide"},
             )
 
-        new_access_token = create_access_token(user_id)
+        # Recharger le user depuis la DB — un compte suspendu ne doit pas pouvoir rafraîchir
+        result = await self.db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "INVALID_REFRESH_TOKEN", "message": "Utilisateur introuvable"},
+            )
+
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={"code": "ACCOUNT_DISABLED", "message": "Ce compte a été désactivé"},
+            )
+
+        new_access_token = create_access_token(user.id)
         return {
             "success": True,
             "access_token": new_access_token,

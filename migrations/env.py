@@ -34,7 +34,10 @@ from app.models import (  # noqa: F401
     organization,
     user,
     agency,
+    counter,
+    employee,
     ticket,
+    refresh_token,
 )
 
 # ── Configuration Alembic ─────────────────────────────────────────────────────
