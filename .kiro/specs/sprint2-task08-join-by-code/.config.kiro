@@ -1,0 +1,7 @@
+sprint: sprint2
+task: S2-08
+title: Join by Code — Rejoindre une organisation
+owner: à assigner
+priority: haute
+depends_on: S2-02
+status: backlog

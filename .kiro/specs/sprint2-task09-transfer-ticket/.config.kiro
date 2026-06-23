@@ -1,0 +1,7 @@
+sprint: sprint2
+task: S2-09
+title: Transfert Ticket
+owner: à assigner
+priority: moyenne
+depends_on: S2-01
+status: backlog

@@ -1,0 +1,7 @@
+sprint: sprint2
+task: S2-07
+title: Services CRUD
+owner: à assigner
+priority: haute
+depends_on: S2-01
+status: backlog
