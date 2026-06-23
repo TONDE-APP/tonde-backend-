@@ -1,0 +1,7 @@
+sprint: sprint3
+task: S3-01
+title: Export Données (CSV/Excel)
+owner: à assigner
+priority: moyenne
+depends_on: S2-04
+status: backlog

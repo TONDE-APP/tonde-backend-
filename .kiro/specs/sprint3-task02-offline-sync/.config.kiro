@@ -1,0 +1,7 @@
+sprint: sprint3
+task: S3-02
+title: Offline Sync — Synchronisation Bidirectionnelle
+owner: à assigner
+priority: haute
+depends_on: S2-04
+status: backlog

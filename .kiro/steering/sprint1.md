@@ -292,3 +292,230 @@ TASK-04 (Clés Redis)       ← avant tout nouveau test de queue
 TASK-05 (Pub/Sub)          ← après TASK-04
 TASK-06 (Rate Limiting)    ← peut être fait en parallèle
 ```
+
+---
+
+# TONDE — Sprint 2 Backend
+
+> Sprint 2 : Multi-tenant avancé, Sécurité, Notifications, Analytics
+
+## Objectif du Sprint 2
+
+Finaliser les fondations du MVP avec :
+- Support multi-organisation complet
+- Notifications temps réel (SMS/FCM)
+- Analytics de base
+- Audit trail (Queue Logs)
+
+---
+
+## Tâches Sprint 2
+
+### S2-01 — Renommage Agency → Branch
+
+**Priorité :** 🔴 Critique — à merger en premier  
+**Branche :** `feat/rename-agency-to-branch`  
+**Décision de référence :** DÉCISION 8 (decisions.md)
+
+**Fichiers à renommer :**
+- `app/models/agency.py` → `app/models/branch.py`
+- `app/schemas/agency.py` → `app/schemas/branch.py`
+- `app/services/agency_service.py` → `app/services/branch_service.py`
+- `app/routers/agencies.py` → `app/routers/branches.py`
+- Migration Alembic : `ALTER TABLE agencies RENAME TO branches`
+
+**Risque :** Breaking change — coordonner avec mobile avant merge
+
+---
+
+### S2-02 — Table user_organizations
+
+**Priorité :** 🔴 Haute  
+**Branche :** `feat/user-organizations-table`  
+**Décision de référence :** DÉCISION 7 (decisions.md)
+
+**Fichiers à créer :**
+- `app/models/user_organization.py`
+- Migration : `003_add_user_organizations_table.py`
+- Tests : `test_user_organization.py`
+
+---
+
+### S2-03 — Refresh Token DB complet
+
+**Priorité :** 🟠 Haute  
+**Branche :** `feat/refresh-token-full-implementation`
+
+**Contexte :** Le modèle RefreshToken existe mais logout()/logout_all() pas encore implémentés.
+
+**Fichiers à modifier :**
+- `app/services/auth_service.py`
+- `app/routers/auth.py`
+- `app/schemas/auth.py` — LogoutRequest
+
+---
+
+### S2-04 — Queue Logs (Audit Trail)
+
+**Priorité :** 🟠 Haute  
+**Branche :** `feat/queue-logs-audit-trail`
+
+**Contexte :** Chaque transition de ticket doit être loggée en DB.
+
+**Fichiers à créer :**
+- `app/models/queue_log.py`
+- Migration : `004_add_queue_logs_table.py`
+
+**Source :** `.kiro/steering/decisions.md` — DONNÉES À COLLECTER
+
+---
+
+### S2-05 — Module Notifications (SMS + FCM)
+
+**Priorité :** 🟡 Moyenne  
+**Branche :** `feat/notifications-module`
+
+**Fichiers à créer :**
+- `app/services/notification_service.py`
+- `app/models/notification.py` (optionnel)
+
+**Triggers :**
+- `TICKET_CALLED` → SMS au client
+- `TICKET_DONE` → notification in-app
+- `waiting_time > 30min` → alerte Rules Engine
+
+---
+
+### S2-06 — Analytics Pipeline base
+
+**Priorité :** 🟡 Moyenne  
+**Branche :** `feat/analytics-pipeline-base`  
+**Dépend de :** S2-04
+
+**Fichiers à créer :**
+- `app/services/analytics_service.py`
+- `app/routers/analytics.py`
+
+**Données collectées :**
+- Temps d'attente moyen par agence/service/heure
+- Taux d'absence (ABSENT / CALLED)
+- Tickets traités par agent
+
+---
+
+### S2-07 — Services CRUD (CRITIQUE MVP)
+
+**Priorité :** 🔴 Critique  
+**Branche :** `feat/services-crud`
+
+**Contexte :** Le client mobile a besoin de lister les services disponibles pour prendre un ticket.
+
+**Fichiers à créer :**
+- `app/routers/services.py`
+- `app/services/service_service.py`
+- `app/schemas/service.py`
+
+**Endpoints :**
+```
+POST /api/v1/organizations/{org_id}/agencies/{agency_id}/services
+GET  /api/v1/agencies/{agency_id}/services  (public — mobile)
+```
+
+---
+
+### S2-08 — Join by Code
+
+**Priorité :** 🟠 Haute  
+**Branche :** `feat/join-by-code`  
+**Dépend de :** S2-02
+
+**Contexte :** Permettre à un client de rejoindre une organisation via un code d'invitation.
+
+**Source :** `.kiro/skills/01_user_membership_model.md`
+
+**Endpoints :**
+```
+POST /api/v1/users/me/organizations/join
+GET  /api/v1/users/me/organizations
+```
+
+---
+
+### S2-09 — Transfert Ticket
+
+**Priorité :** 🟡 Moyenne  
+**Branche :** `feat/transfer-ticket`
+
+**Contexte :** La machine à états prévoit `TRANSFERRED` mais pas d'endpoint.
+
+**Endpoint :**
+```
+POST /api/v1/tickets/{ticket_id}/transfer
+```
+
+---
+
+## Règles Git Sprint 2
+
+```bash
+# Ordre de merge (important !)
+S2-01 (Vital) → EN PREMIER
+S2-02 (Vital) → parallèle avec S2-03 et S2-04
+S2-07 (Gédéon) → peut commencer maintenant
+S2-08 (Tshibangu) → après S2-02
+S2-09 (Tshibangu) → peut commencer maintenant
+S2-05 (Tshibangu) → peut commencer maintenant
+S2-06 (Tshibangu) → après S2-04
+```
+
+---
+
+# TONDE — Sprint 3 Backend
+
+> Sprint 3 : Offline Sync, Intégration, Validation
+
+## Objectif du Sprint 3
+
+Finaliser le MVP avec :
+- Synchronisation offline
+- Export de données
+- Tests d'intégration complets
+
+---
+
+## Tâches Sprint 3
+
+### S3-01 — Export Données (CSV/Excel)
+
+**Priorité :** 🟡 Moyenne  
+**Branche :** `feat/export-data`
+
+**Endpoints :**
+```
+GET /api/v1/organizations/{org_id}/tickets/export
+GET /api/v1/agencies/{agency_id}/stats/export
+```
+
+**Formats :** CSV, XLSX
+
+---
+
+### S3-02 — Offline Sync
+
+**Priorité :** 🔴 Critique  
+**Branche :** `feat/offline-sync`  
+**Dépend de :** S2-04
+
+**Contexte :** Le marché africain subit des coupures réseau fréquentes.
+
+**Endpoints :**
+```
+GET  /api/v1/sync/state
+POST /api/v1/sync/actions
+GET  /api/v1/sync/changes
+```
+
+**Features :**
+- Idempotence par client_action_id
+- Conflict detection et resolution
+- Optimistic UI sync
