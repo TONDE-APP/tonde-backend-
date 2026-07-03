@@ -25,7 +25,7 @@ from app.core.redis import get_redis, close_redis
 # connaisse toutes les tables avant toute opération DB
 import app.models  # noqa: F401
 
-from app.routers import auth, tickets, organizations, agencies, counters, employees
+from app.routers import auth, tickets, organizations, agencies, counters, employees, services
 from app.websocket.queue_ws import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -138,6 +138,7 @@ app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["
 app.include_router(tickets.router,       prefix="/api/v1/tickets",       tags=["🎫 Tickets"])
 app.include_router(organizations.router, prefix="/api/v1/organizations", tags=["🏢 Organizations"])
 app.include_router(agencies.router,      prefix="/api/v1/organizations", tags=["🏦 Agencies"])
+app.include_router(services.router,      prefix="/api/v1",               tags=["🛎 Services"])
 app.include_router(
     counters.router,
     prefix="/api/v1/organizations/{org_id}/agencies/{agency_id}/counters",
