@@ -20,3 +20,9 @@ from app.models.ticket import (                   # noqa: F401
     ALLOWED_TRANSITIONS,
 )
 from app.models.refresh_token import RefreshToken  # noqa: F401
+from app.models.notification import (              # noqa: F401
+    Notification,
+    NotificationChannel,
+    NotificationStatus,
+)
+from app.models.queue_log import QueueLog, QueueLogAction  # noqa: F401
