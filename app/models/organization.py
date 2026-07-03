@@ -60,9 +60,13 @@ class Organization(Base):
     )
 
     # ── Relations ─────────────────────────────────────────────
-    # NOTE : relation vers Agency (qui deviendra Branch en Sprint 1)
-    agencies: Mapped[list["Agency"]] = relationship(  # noqa: F821
-        "Agency", foreign_keys="Agency.org_id", cascade="all, delete-orphan"
+    # Sprint 2 — S2-01 : Agency renommée en Branch
+    branches: Mapped[list["Branch"]] = relationship(  # noqa: F821
+        "Branch", foreign_keys="Branch.org_id", cascade="all, delete-orphan"
+    )
+    # Sprint 2 — S2-02 : membres de l'organisation (table pivot)
+    user_organizations: Mapped[list["UserOrganization"]] = relationship(  # noqa: F821
+        "UserOrganization", back_populates="organization", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

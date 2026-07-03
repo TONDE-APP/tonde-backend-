@@ -21,7 +21,7 @@ from app.models.ticket import (
     Ticket, TicketStatus, TicketPriority,
     PRIORITY_SCORES, ALLOWED_TRANSITIONS,
 )
-from app.models.agency import Agency, Service
+from app.models.branch import Branch, Service
 from app.core.redis import (
     add_to_queue, get_queue_position,
     get_queue_size, remove_from_queue, get_next_ticket,
@@ -67,17 +67,17 @@ class TicketService:
             HTTPException 403: Agence n'appartient pas à l'org
             HTTPException 409: Ticket actif déjà existant
         """
-        # Récupérer l'agence — si org_id est None, on cherche l'agence globalement
+        # Récupérer la branch — si org_id est None, on cherche globalement
         # puis on utilise son org_id pour le reste
-        agency = await self._get_agency_for_creation(data.agency_id, org_id)
-        
-        # Si le client n'a pas d'org, on utilise l'org de l'agence
-        ticket_org_id = org_id if org_id else agency.org_id
+        branch = await self._get_agency_for_creation(data.agency_id, org_id)
 
-        if not agency.is_active or not agency.is_open:
+        # Si le client n'a pas d'org, on utilise l'org de la branch
+        ticket_org_id = org_id if org_id else branch.org_id
+
+        if not branch.is_active or not branch.is_open:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"code": "AGENCY_CLOSED", "message": "Cette agence est fermée en ce moment"},
+                detail={"code": "BRANCH_CLOSED", "message": "Cette branch est fermée en ce moment"},
             )
 
         # Vérifier que le service existe dans cette agence
@@ -131,7 +131,7 @@ class TicketService:
         total = await get_queue_size(redis_org_id, data.agency_id, data.service_id)
 
         # Calculer l'ETA
-        eta = max(0, (position - 1) * agency.avg_service_minutes)
+        eta = max(0, (position - 1) * branch.avg_service_minutes)
 
         ticket.estimated_wait_minutes = eta
         await self.db.commit()
@@ -173,11 +173,11 @@ class TicketService:
         position = await get_queue_position(org_id, ticket.agency_id, ticket.service_id, ticket.id)
         total = await get_queue_size(org_id, ticket.agency_id, ticket.service_id)
 
-        agency_result = await self.db.execute(
-            select(Agency).where(Agency.id == ticket.agency_id, Agency.org_id == org_id)
+        branch_result = await self.db.execute(
+            select(Branch).where(Branch.id == ticket.agency_id, Branch.org_id == org_id)
         )
-        agency = agency_result.scalar_one_or_none()
-        eta = max(0, (position - 1) * (agency.avg_service_minutes if agency else 5))
+        branch = branch_result.scalar_one_or_none()
+        eta = max(0, (position - 1) * (branch.avg_service_minutes if branch else 5))
 
         return TicketResponse(
             id=ticket.id,
@@ -411,53 +411,53 @@ class TicketService:
     # ── Helpers privés ────────────────────────────────────────────────────────
     async def _get_agency_for_creation(
         self, agency_id: str, user_org_id: str | None
-    ) -> Agency:
+    ) -> Branch:
         """
-        Récupère une agence pour la création de ticket.
-        
+        Récupère une branch pour la création de ticket.
+
         Si user_org_id est fourni, vérifie l'appartenance à cette organisation.
-        Si user_org_id est None (client OTP sans affiliation), cherche l'agence globalement.
+        Si user_org_id est None (client OTP sans affiliation), cherche la branch globalement.
         """
-        query = select(Agency).where(Agency.id == agency_id)
+        query = select(Branch).where(Branch.id == agency_id)
         if user_org_id:
-            query = query.where(Agency.org_id == user_org_id)
-        
+            query = query.where(Branch.org_id == user_org_id)
+
         result = await self.db.execute(query)
-        agency = result.scalar_one_or_none()
-        if not agency:
+        branch = result.scalar_one_or_none()
+        if not branch:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail={"code": "AGENCY_NOT_FOUND", "message": "Agence introuvable"},
+                detail={"code": "BRANCH_NOT_FOUND", "message": "Branch introuvable"},
             )
-        return agency
+        return branch
 
-    async def _get_agency(self, agency_id: str, org_id: str) -> Agency:
-        """Récupère une agence en vérifiant son appartenance à l'organisation."""
+    async def _get_agency(self, agency_id: str, org_id: str) -> Branch:
+        """Récupère une branch en vérifiant son appartenance à l'organisation."""
         result = await self.db.execute(
-            select(Agency).where(
-                Agency.id == agency_id,
-                Agency.org_id == org_id,
+            select(Branch).where(
+                Branch.id == agency_id,
+                Branch.org_id == org_id,
             )
         )
-        agency = result.scalar_one_or_none()
-        if not agency:
+        branch = result.scalar_one_or_none()
+        if not branch:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail={"code": "AGENCY_NOT_FOUND", "message": "Agence introuvable"},
+                detail={"code": "BRANCH_NOT_FOUND", "message": "Branch introuvable"},
             )
-        return agency
+        return branch
 
     async def _get_service(
         self, service_id: str, agency_id: str, org_id: str | None
     ) -> Service:
-        """Récupère un service en vérifiant son appartenance à l'agence et l'org."""
+        """Récupère un service en vérifiant son appartenance à la branch et l'org."""
         query = select(Service).where(
             Service.id == service_id,
-            Service.agency_id == agency_id,
+            Service.branch_id == agency_id,
         )
         if org_id:
             query = query.where(Service.org_id == org_id)
-        
+
         result = await self.db.execute(query)
         service = result.scalar_one_or_none()
         if not service:

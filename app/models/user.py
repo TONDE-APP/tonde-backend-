@@ -12,7 +12,7 @@ sont pas attachés à une organisation spécifique.
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import String, Boolean, DateTime, Enum as SAEnum, ForeignKey
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 import enum
 
@@ -86,3 +86,9 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User {self.phone or self.email} ({self.role})>"
+
+    # ── Relations ─────────────────────────────────────────────
+    # Sprint 2 — S2-02 : appartenance multi-organisations
+    user_organizations: Mapped[list["UserOrganization"]] = relationship(  # noqa: F821
+        "UserOrganization", back_populates="user", cascade="all, delete-orphan"
+    )
