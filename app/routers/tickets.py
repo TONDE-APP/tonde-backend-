@@ -13,7 +13,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user, get_current_agent, get_ws_user
 from app.core.middlewares import limiter
 from app.models.user import User
-from app.schemas.ticket import CreateTicketRequest, CallNextRequest
+from app.schemas.ticket import CreateTicketRequest, CallNextRequest, TransferTicketRequest
 from app.services.ticket_service import TicketService
 from app.websocket.queue_ws import ws_manager
 
@@ -175,6 +175,55 @@ async def return_to_queue(
     """Transition ABSENT → WAITING. Le client redemande sa place."""
     service = TicketService(db)
     return await service.return_to_queue(ticket_id, _get_org_id(current_user))
+
+
+@router.post("/{ticket_id}/transfer", summary="Transférer un ticket vers un autre service")
+async def transfer_ticket(
+    ticket_id: str,
+    body: TransferTicketRequest,
+    current_user: User = Depends(get_current_agent),  # rôle AGENT minimum
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Transfère un ticket vers un autre service.
+    Nécessite le rôle AGENT minimum.
+
+    Transition autorisée : CALLED → TRANSFERRED.
+    Le ticket passe en état terminal TRANSFERRED.
+    L'agent peut ensuite créer manuellement un nouveau ticket
+    dans le service cible si nécessaire.
+
+    Notifie le client en temps réel via WebSocket.
+    """
+    if not current_user.org_id:
+        from fastapi import HTTPException, status as http_status
+        raise HTTPException(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail={"code": "NO_ORG", "message": "Cet agent n'est pas associé à une organisation"},
+        )
+
+    svc = TicketService(db)
+    result = await svc.transfer_ticket(
+        ticket_id=ticket_id,
+        data=body,
+        org_id=current_user.org_id,
+        agent_user_id=current_user.id,
+    )
+
+    # Notifier le client en temps réel
+    if result.get("success"):
+        await ws_manager.publish_event(current_user.org_id, {
+            "type": "ticket_transferred",
+            "ticket_id": result["ticket_id"],
+            "ticket_number": result["ticket_number"],
+            "target_service_id": body.target_service_id,
+            "message": (
+                f"Votre ticket {result['ticket_number']} a été transféré "
+                f"vers un autre service. Un agent va vous prendre en charge."
+            ),
+        })
+
+    return result
 
 
 # ── WebSocket endpoints ───────────────────────────────────────────────────────

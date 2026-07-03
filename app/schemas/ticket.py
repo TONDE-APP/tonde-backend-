@@ -68,3 +68,26 @@ class CallNextRequest(BaseModel):
     service_id: str   # File à cibler — chaque service a sa propre file Redis
     counter_id: str
     counter_name: str
+
+
+class TransferTicketRequest(BaseModel):
+    """
+    Requête de transfert d'un ticket vers un autre service.
+
+    Le guichetier transfère le client vers un autre service
+    (ex: la Caisse transfère vers le Crédit après analyse du dossier).
+
+    Transition autorisée : CALLED → TRANSFERRED (état terminal).
+    Si un nouveau ticket doit être créé dans le service cible,
+    c'est une opération séparée à la discrétion de l'agent.
+    """
+    target_service_id: str              # Service de destination
+    target_counter_id: str | None = None  # Guichet cible (optionnel)
+    reason: str | None = None           # Raison du transfert (pour l'audit trail)
+
+    @field_validator("target_service_id")
+    @classmethod
+    def target_service_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Le service cible ne peut pas être vide")
+        return v.strip()

@@ -22,11 +22,13 @@ from app.models.ticket import (
     PRIORITY_SCORES, ALLOWED_TRANSITIONS,
 )
 from app.models.agency import Agency, Service
+from app.models.user import User
+from app.models.queue_log import QueueLog, QueueLogAction
 from app.core.redis import (
     add_to_queue, get_queue_position,
     get_queue_size, remove_from_queue, get_next_ticket,
 )
-from app.schemas.ticket import CreateTicketRequest, TicketResponse, TicketHistoryResponse
+from app.schemas.ticket import CreateTicketRequest, TicketResponse, TicketHistoryResponse, TransferTicketRequest
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +138,17 @@ class TicketService:
         ticket.estimated_wait_minutes = eta
         await self.db.commit()
 
+        # Audit trail — log de création (S2-04)
+        await self._log_action(
+            ticket=ticket,
+            action=QueueLogAction.TICKET_CREATED,
+            from_status=None,
+            to_status=TicketStatus.WAITING.value,
+            actor_id=user_id,
+            actor_role="client",
+        )
+        await self.db.commit()
+
         logger.info(f"Ticket créé: {ticket_number} | org={ticket_org_id} | position={position} | ETA={eta}min")
 
         return TicketResponse(
@@ -240,7 +253,11 @@ class TicketService:
 
         ticket = await self._get_ticket_by_id(next_ticket_id, org_id)
 
-        await self._transition(ticket, TicketStatus.CALLED)
+        await self._transition(
+            ticket, TicketStatus.CALLED,
+            counter_id=counter_id,
+            counter_name=counter_name,
+        )
         ticket.called_at = datetime.now(timezone.utc)
         ticket.counter_id = counter_id
         ticket.counter_name = counter_name
@@ -250,6 +267,23 @@ class TicketService:
         await self.db.refresh(ticket)
 
         logger.info(f"Ticket appelé: {ticket.number} → guichet {counter_name} | org={org_id}")
+
+        # Déclencher les notifications (SMS + FCM) de manière non-bloquante
+        # L'échec d'une notification ne doit jamais bloquer le flux principal
+        try:
+            user_result = await self.db.execute(
+                select(User).where(User.id == ticket.user_id)
+            )
+            ticket_user = user_result.scalar_one_or_none()
+            if ticket_user:
+                from app.services.notification_service import NotificationService
+                notif_service = NotificationService(self.db)
+                await notif_service.notify_ticket_called(ticket, ticket_user)
+        except Exception as notif_error:
+            logger.error(
+                f"Échec notification ticket_called pour {ticket.number}: {notif_error}",
+                exc_info=True,
+            )
 
         return {
             "success": True,
@@ -291,6 +325,23 @@ class TicketService:
             ticket.actual_wait_minutes = int(delta.total_seconds() / 60)
 
         await self.db.commit()
+
+        # Déclencher la notification "service terminé" de manière non-bloquante
+        try:
+            user_result = await self.db.execute(
+                select(User).where(User.id == ticket.user_id)
+            )
+            ticket_user = user_result.scalar_one_or_none()
+            if ticket_user:
+                from app.services.notification_service import NotificationService
+                notif_service = NotificationService(self.db)
+                await notif_service.notify_ticket_done(ticket, ticket_user)
+        except Exception as notif_error:
+            logger.error(
+                f"Échec notification ticket_done pour {ticket.number}: {notif_error}",
+                exc_info=True,
+            )
+
         return {"success": True, "ticket_id": ticket_id}
 
     # ── Marquer un ticket comme absent ───────────────────────────────────────
@@ -305,10 +356,67 @@ class TicketService:
         logger.info(f"Ticket absent: {ticket.number}")
         return {"success": True, "ticket_id": ticket_id}
 
-    # ── Remettre un ticket absent en file ─────────────────────────────────────
-    async def return_to_queue(
-        self, ticket_id: str, org_id: str
+    # ── Transférer un ticket vers un autre service ────────────────────────────
+    async def transfer_ticket(
+        self,
+        ticket_id: str,
+        data: TransferTicketRequest,
+        org_id: str,
+        agent_user_id: str,
     ) -> dict:
+        """
+        Transfère un ticket vers un autre service (CALLED → TRANSFERRED).
+
+        Le ticket passe à l'état terminal TRANSFERRED — il n'évoluera plus.
+        L'agent décide ensuite si un nouveau ticket est créé dans le service cible.
+
+        Règle machine à états : seuls les tickets en état CALLED peuvent être transférés.
+        Un ticket WAITING, SERVING ou dans un état terminal ne peut pas être transféré.
+
+        Args:
+            ticket_id: UUID du ticket à transférer
+            data: Données du transfert (service cible, guichet cible, raison)
+            org_id: ID de l'organisation (isolation multi-tenant)
+            agent_user_id: ID de l'agent effectuant le transfert (pour logs)
+
+        Returns:
+            Dict avec ticket_id, ticket_number, target_service_id
+
+        Raises:
+            HTTPException 400: Transition interdite (ticket non en état CALLED)
+            HTTPException 404: Ticket introuvable
+        """
+        ticket = await self._get_ticket_by_id(ticket_id, org_id)
+
+        # La machine à états enforced vérifie que CALLED → TRANSFERRED est autorisé
+        await self._transition(ticket, TicketStatus.TRANSFERRED)
+
+        # Retirer de la file Redis de l'ancien service (le ticket ne doit plus être appelé)
+        await remove_from_queue(org_id, ticket.agency_id, ticket.service_id, ticket_id)
+
+        await self.db.commit()
+        await self.db.refresh(ticket)
+
+        logger.info(
+            f"Ticket transféré: {ticket.number} | "
+            f"service_source={ticket.service_id} → service_cible={data.target_service_id} | "
+            f"agent={agent_user_id} | org={org_id} | "
+            f"raison={data.reason or 'non précisée'}"
+        )
+
+        return {
+            "success": True,
+            "ticket_id": ticket.id,
+            "ticket_number": ticket.number,
+            "source_service_id": ticket.service_id,
+            "target_service_id": data.target_service_id,
+            "target_counter_id": data.target_counter_id,
+            "reason": data.reason,
+            "message": f"Ticket {ticket.number} transféré vers le service cible",
+        }
+
+    # ── Remettre un ticket absent en file ─────────────────────────────────────
+    async def return_to_queue(self, ticket_id: str, org_id: str) -> dict:
         """
         Le client absent demande à revenir dans la file.
         Transition : ABSENT → WAITING
@@ -384,11 +492,26 @@ class TicketService:
 
     # ── Machine à états ───────────────────────────────────────────────────────
     async def _transition(
-        self, ticket: Ticket, new_status: TicketStatus
+        self, ticket: Ticket, new_status: TicketStatus,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
+        counter_id: str | None = None,
+        counter_name: str | None = None,
+        extra_data: str | None = None,
     ) -> None:
         """
         Applique une transition d'état sur un ticket.
         Vérifie que la transition est autorisée selon ALLOWED_TRANSITIONS.
+        Écrit automatiquement un QueueLog pour chaque transition (audit trail S2-04).
+
+        Args:
+            ticket: Le ticket à faire évoluer
+            new_status: Le nouvel état cible
+            actor_id: ID de l'utilisateur déclenchant la transition (pour logs)
+            actor_role: Rôle de l'acteur (pour analytics)
+            counter_id: ID du guichet impliqué (si applicable)
+            counter_name: Nom du guichet (si applicable)
+            extra_data: JSON libre pour métadonnées supplémentaires (transfert, etc.)
 
         Raises:
             HTTPException 400: Si la transition est interdite
@@ -406,7 +529,22 @@ class TicketService:
                     ),
                 },
             )
+
+        from_status = ticket.status.value
         ticket.status = new_status
+
+        # Audit trail — log immuable de chaque transition
+        await self._log_action(
+            ticket=ticket,
+            action=_STATUS_TO_ACTION.get(new_status, QueueLogAction.TICKET_CREATED),
+            from_status=from_status,
+            to_status=new_status.value,
+            actor_id=actor_id,
+            actor_role=actor_role,
+            counter_id=counter_id,
+            counter_name=counter_name,
+            extra_data=extra_data,
+        )
 
     # ── Helpers privés ────────────────────────────────────────────────────────
     async def _get_agency_for_creation(
@@ -521,3 +659,74 @@ class TicketService:
         )
         count = result.scalar() or 0
         return count + 1
+
+    async def _log_action(
+        self,
+        ticket: Ticket,
+        action: QueueLogAction,
+        from_status: str | None,
+        to_status: str,
+        actor_id: str | None = None,
+        actor_role: str | None = None,
+        counter_id: str | None = None,
+        counter_name: str | None = None,
+        extra_data: str | None = None,
+    ) -> None:
+        """
+        Persiste un enregistrement immuable dans queue_logs (audit trail S2-04).
+
+        Appelé automatiquement par _transition() et create_ticket().
+        Ne lève jamais d'exception — un échec de log ne doit pas bloquer
+        l'opération principale.
+
+        Args:
+            ticket: Le ticket concerné
+            action: L'action QueueLogAction à enregistrer
+            from_status: Statut avant la transition (None pour TICKET_CREATED)
+            to_status: Statut après la transition
+            actor_id: ID de l'utilisateur ayant déclenché l'action
+            actor_role: Rôle de l'acteur
+            counter_id: ID du guichet impliqué
+            counter_name: Nom du guichet
+            extra_data: JSON libre (raison du transfert, etc.)
+        """
+        try:
+            now = datetime.now(timezone.utc)
+            elapsed = int((now - ticket.created_at).total_seconds()) if ticket.created_at else None
+
+            log = QueueLog(
+                org_id=ticket.org_id,
+                ticket_id=ticket.id,
+                agency_id=ticket.agency_id,
+                service_id=ticket.service_id,
+                action=action,
+                from_status=from_status,
+                to_status=to_status,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                counter_id=counter_id or ticket.counter_id,
+                counter_name=counter_name or ticket.counter_name,
+                elapsed_seconds=elapsed,
+                extra_data=extra_data,
+            )
+            self.db.add(log)
+            # Pas de commit ici — le commit est géré par la méthode appelante
+        except Exception as e:
+            logger.error(
+                f"Échec écriture queue_log — ticket={ticket.id} action={action}: {e}",
+                exc_info=True,
+            )
+
+
+# ── Mapping statut → action de log ────────────────────────────────────────────
+# Utilisé par _transition() pour déterminer l'action à logguer.
+_STATUS_TO_ACTION: dict[TicketStatus, QueueLogAction] = {
+    TicketStatus.CALLED:      QueueLogAction.TICKET_CALLED,
+    TicketStatus.SERVING:     QueueLogAction.TICKET_SERVING,
+    TicketStatus.DONE:        QueueLogAction.TICKET_DONE,
+    TicketStatus.ABSENT:      QueueLogAction.TICKET_ABSENT,
+    TicketStatus.WAITING:     QueueLogAction.TICKET_RETURNED,   # ABSENT → WAITING
+    TicketStatus.TRANSFERRED: QueueLogAction.TICKET_TRANSFERRED,
+    TicketStatus.CANCELLED:   QueueLogAction.TICKET_CANCELLED,
+    TicketStatus.INCOMPLETE:  QueueLogAction.TICKET_INCOMPLETE,
+}
