@@ -20,4 +20,4 @@ from app.models.ticket import (                         # noqa: F401
     ALLOWED_TRANSITIONS,
 )
 from app.models.refresh_token import RefreshToken       # noqa: F401
-from app.models.user_organization import UserOrganization  # noqa: F401  Sprint 2 : S2-02
+# UserOrganization sera ajouté dans feat/user-organizations-table (S2-02)
