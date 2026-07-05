@@ -86,3 +86,9 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User {self.phone or self.email} ({self.role})>"
+
+    # ── Relations ─────────────────────────────────────────────
+    # Sprint 2 — S2-02 : appartenance multi-organisations
+    user_organizations: Mapped[list["UserOrganization"]] = relationship(  # noqa: F821
+        "UserOrganization", back_populates="user", cascade="all, delete-orphan"
+    )
