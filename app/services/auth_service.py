@@ -9,13 +9,15 @@ Flux secondaire :
   - register_email / login_email pour les agents et admins
   - refresh_token pour renouveler l'access token
 """
+import hashlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, update
 from fastapi import HTTPException, status
 
 from app.models.user import User
+from app.models.refresh_token import RefreshToken
 from app.core.security import (
     hash_password, verify_password,
     create_access_token, create_refresh_token,
@@ -31,7 +33,7 @@ from app.core.config import settings
 from app.schemas.auth import (
     RegisterPhoneRequest, VerifyOtpRequest,
     RegisterEmailRequest, LoginEmailRequest,
-    AuthResponse, UserInToken,
+    AuthResponse, UserInToken, RefreshResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -225,12 +227,36 @@ class AuthService:
         user = await self._get_or_create_user_by_phone(phone)
         user.is_verified = True
         user.last_login = datetime.now(timezone.utc)
+        await self.db.flush()
+
+        # Créer la réponse avec tokens
+        access_token = create_access_token(user.id)
+        refresh_token_str = create_refresh_token(user.id)
+
+        # Persister le refresh token en DB
+        await self._persist_refresh_token(
+            user_id=user.id,
+            token=refresh_token_str,
+            device_id=data.device_id if hasattr(data, "device_id") else None,
+        )
         await self.db.commit()
         await self.db.refresh(user)
 
         logger.info(f"Connexion réussie par OTP: {phone} | user_id={user.id}")
 
-        return self._create_auth_response(user)
+        return AuthResponse(
+            access_token=access_token,
+            refresh_token=refresh_token_str,
+            user=UserInToken(
+                id=user.id,
+                name=user.name,
+                phone=user.phone,
+                email=user.email,
+                role=user.role.value,
+                language=user.language,
+                is_verified=user.is_verified,
+            ),
+        )
 
     # ── Inscription par email ─────────────────────────────────────────────────
     async def register_email(self, data: RegisterEmailRequest) -> AuthResponse:
@@ -254,12 +280,17 @@ class AuthService:
             is_verified=True,
         )
         self.db.add(user)
+        await self.db.flush()
+
+        # Persister le refresh token
+        auth_response = self._create_auth_response(user, device_id=data.device_id if hasattr(data, "device_id") else None)
+        await self._persist_refresh_token(user_id=user.id, token=auth_response.refresh_token)
         await self.db.commit()
         await self.db.refresh(user)
 
         logger.info(f"Nouveau compte email: {data.email} | user_id={user.id}")
 
-        return self._create_auth_response(user)
+        return auth_response
 
     # ── Connexion par email ───────────────────────────────────────────────────
     async def login_email(self, data: LoginEmailRequest) -> AuthResponse:
@@ -288,49 +319,155 @@ class AuthService:
             )
 
         user.last_login = datetime.now(timezone.utc)
+        await self.db.flush()
+
+        # Persister le refresh token
+        auth_response = self._create_auth_response(user, device_id=data.device_id if hasattr(data, "device_id") else None)
+        await self._persist_refresh_token(user_id=user.id, token=auth_response.refresh_token)
         await self.db.commit()
 
         logger.info(f"Connexion email: {data.email} | user_id={user.id}")
 
-        return self._create_auth_response(user)
+        return auth_response
 
-    # ── Refresh Token ─────────────────────────────────────────────────────────
-    async def refresh_token(self, refresh_token: str) -> dict:
+    # ── Refresh Token avec rotation ───────────────────────────────────────────
+    async def refresh_token(self, refresh_token_str: str) -> RefreshResponse:
         """
-        Renouvelle l'access token à partir d'un refresh token valide.
-        Recharge le user depuis la DB et vérifie qu'il est toujours actif.
+        Rotation sécurisée du refresh token.
+
+        - Vérifie la signature JWT
+        - Vérifie que le token existe en DB et n'est pas révoqué
+        - Révoque l'ancien token
+        - Émet un nouveau token et le persiste en DB
+
+        Args:
+            refresh_token_str: Le refresh token JWT envoyé par le client
+
+        Returns:
+            RefreshResponse avec access_token et refresh_token renouvelés
 
         Raises:
-            HTTPException 401: Refresh token invalide, expiré, ou user désactivé
+            HTTPException 401: Token invalide, expiré, révoqué ou user inactif
         """
-        user_id = verify_token(refresh_token, token_type="refresh")
+        user_id = verify_token(refresh_token_str, token_type="refresh")
         if not user_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={"code": "INVALID_REFRESH_TOKEN", "message": "Token de rafraîchissement invalide"},
+                detail={"code": "INVALID_REFRESH_TOKEN", "message": "Token de rafraîchissement invalide ou expiré"},
             )
 
-        # Recharger le user depuis la DB — un compte suspendu ne doit pas pouvoir rafraîchir
-        result = await self.db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-
-        if not user:
+        # Vérifier en DB que le token n'est pas révoqué
+        token_hash = hashlib.sha256(refresh_token_str.encode()).hexdigest()
+        result = await self.db.execute(
+            select(RefreshToken).where(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.revoked_at.is_(None),
+            )
+        )
+        stored_token = result.scalar_one_or_none()
+        if not stored_token or not stored_token.is_valid:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail={"code": "INVALID_REFRESH_TOKEN", "message": "Utilisateur introuvable"},
+                detail={"code": "TOKEN_REVOKED", "message": "Cette session a été révoquée. Reconnectez-vous."},
             )
 
-        if not user.is_active:
+        # Vérifier que le user est toujours actif
+        result = await self.db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if not user or not user.is_active:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=status.HTTP_401_UNAUTHORIZED,
                 detail={"code": "ACCOUNT_DISABLED", "message": "Ce compte a été désactivé"},
             )
 
+        # Rotation : révoquer l'ancien token
+        stored_token.revoked_at = datetime.now(timezone.utc)
+        await self.db.flush()
+
+        # Émettre et persister le nouveau token
         new_access_token = create_access_token(user.id)
+        new_refresh_token = create_refresh_token(user.id)
+        await self._persist_refresh_token(
+            user_id=user.id,
+            token=new_refresh_token,
+            device_id=stored_token.device_id,
+        )
+        await self.db.commit()
+
+        logger.info(f"Rotation refresh token: user_id={user.id}")
+
+        return RefreshResponse(
+            access_token=new_access_token,
+            refresh_token=new_refresh_token,
+        )
+
+    # ── Logout — révoquer la session courante ─────────────────────────────────
+    async def logout(self, refresh_token_str: str) -> dict:
+        """
+        Révoque le refresh token fourni.
+        N'affecte pas les autres sessions du même utilisateur.
+
+        Args:
+            refresh_token_str: Le refresh token à révoquer
+
+        Returns:
+            Dict success
+
+        Raises:
+            HTTPException 401: Token introuvable ou déjà révoqué
+        """
+        token_hash = hashlib.sha256(refresh_token_str.encode()).hexdigest()
+        result = await self.db.execute(
+            select(RefreshToken).where(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.revoked_at.is_(None),
+            )
+        )
+        stored_token = result.scalar_one_or_none()
+        if not stored_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "TOKEN_NOT_FOUND", "message": "Session introuvable ou déjà révoquée"},
+            )
+
+        stored_token.revoked_at = datetime.now(timezone.utc)
+        await self.db.commit()
+
+        logger.info(f"Logout: token révoqué pour user_id={stored_token.user_id}")
+        return {"success": True, "message": "Déconnexion réussie"}
+
+    # ── Logout All — révoquer toutes les sessions ──────────────────────────────
+    async def logout_all(self, user_id: str) -> dict:
+        """
+        Révoque toutes les sessions actives de l'utilisateur.
+        Utile en cas de compromission de compte ou déconnexion de tous les appareils.
+
+        Args:
+            user_id: ID de l'utilisateur dont révoquer toutes les sessions
+
+        Returns:
+            Dict avec le nombre de sessions révoquées
+        """
+        now = datetime.now(timezone.utc)
+        result = await self.db.execute(
+            select(RefreshToken).where(
+                RefreshToken.user_id == user_id,
+                RefreshToken.revoked_at.is_(None),
+            )
+        )
+        active_tokens = result.scalars().all()
+        count = len(active_tokens)
+
+        for token in active_tokens:
+            token.revoked_at = now
+
+        await self.db.commit()
+
+        logger.info(f"Logout all: {count} session(s) révoquée(s) pour user_id={user_id}")
         return {
             "success": True,
-            "access_token": new_access_token,
-            "token_type": "bearer",
+            "message": f"{count} session(s) révoquée(s). Tous vos appareils ont été déconnectés.",
+            "revoked_count": count,
         }
 
     # ── Helpers privés ────────────────────────────────────────────────────────
@@ -354,7 +491,7 @@ class AuthService:
 
         return user
 
-    def _create_auth_response(self, user: User) -> AuthResponse:
+    def _create_auth_response(self, user: User, device_id: str | None = None) -> AuthResponse:
         """Construit la réponse JWT standard après connexion réussie."""
         return AuthResponse(
             access_token=create_access_token(user.id),
@@ -369,6 +506,38 @@ class AuthService:
                 is_verified=user.is_verified,
             ),
         )
+
+    async def _persist_refresh_token(
+        self,
+        user_id: str,
+        token: str,
+        device_id: str | None = None,
+        ip_address: str | None = None,
+    ) -> RefreshToken:
+        """
+        Persiste le hash SHA-256 du refresh token en DB.
+
+        Args:
+            user_id: Propriétaire du token
+            token: Le JWT brut (jamais stocké — seulement son hash)
+            device_id: Identifiant du device pour le tracking multi-device
+            ip_address: IP du client pour l'audit
+
+        Returns:
+            L'enregistrement RefreshToken créé
+        """
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            days=settings.REFRESH_TOKEN_EXPIRE_DAYS
+        )
+        token_record = RefreshToken(
+            user_id=user_id,
+            token_hash=hashlib.sha256(token.encode()).hexdigest(),
+            device_id=device_id,
+            ip_address=ip_address,
+            expires_at=expires_at,
+        )
+        self.db.add(token_record)
+        return token_record
 
     async def _send_otp_sms(self, phone: str, otp: str) -> None:
         """

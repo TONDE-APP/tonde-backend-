@@ -84,10 +84,12 @@ class RefreshToken(Base):
     @property
     def is_valid(self) -> bool:
         """True si le token n'est pas révoqué et n'est pas expiré."""
-        return (
-            self.revoked_at is None
-            and datetime.now(timezone.utc) < self.expires_at
-        )
+        now = datetime.now(timezone.utc)
+        expires = self.expires_at
+        # Rendre timezone-aware si nécessaire (SQLite retourne naive datetimes)
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        return self.revoked_at is None and now < expires
 
     def __repr__(self) -> str:
         status = "active" if self.revoked_at is None else "revoked"
