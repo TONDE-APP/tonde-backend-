@@ -64,6 +64,10 @@ class Organization(Base):
     branches: Mapped[list["Branch"]] = relationship(  # noqa: F821
         "Branch", foreign_keys="Branch.org_id", cascade="all, delete-orphan"
     )
+    # Sprint 2 — S2-02 : membres de l'organisation (table pivot)
+    user_organizations: Mapped[list["UserOrganization"]] = relationship(  # noqa: F821
+        "UserOrganization", back_populates="organization", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Organization {self.name} ({self.sector})>"
