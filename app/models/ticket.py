@@ -96,7 +96,7 @@ class Ticket(Base):
         String(36), ForeignKey("users.id", ondelete="CASCADE")
     )
     agency_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("agencies.id", ondelete="CASCADE")
+        String(36), ForeignKey("branches.id", ondelete="CASCADE")
     )
     service_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("services.id", ondelete="CASCADE")
