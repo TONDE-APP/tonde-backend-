@@ -12,11 +12,11 @@ from fastapi import HTTPException
 from unittest.mock import patch, AsyncMock
 
 from app.services.ticket_service import TicketService
-from app.services.agency_service import AgencyService
+from app.services.branch_service import BranchService
 from app.services.organization_service import OrganizationService
 from app.schemas.ticket import CreateTicketRequest
 from app.schemas.organization import CreateOrganizationRequest
-from app.schemas.agency import CreateAgencyRequest
+from app.schemas.branch import CreateBranchRequest
 from app.models.user import User
 from app.models.ticket import TicketStatus
 
@@ -30,16 +30,16 @@ async def _create_org(db, slug: str, name: str) -> str:
 
 
 async def _create_agency(db, org_id: str, slug: str) -> str:
-    svc = AgencyService(db)
+    svc = BranchService(db)
     agency = await svc.create(
         org_id,
-        CreateAgencyRequest(name=f"Agence {slug}", slug=slug, sector="bank"),
+        CreateBranchRequest(name=f"Agence {slug}", slug=slug, sector="bank"),
         caller_org_id=None,
     )
-    # Ouvrir l'agence pour permettre la création de tickets dans les tests
-    from app.models.agency import Agency
+    # Ouvrir la branch pour permettre la création de tickets dans les tests
+    from app.models.branch import Branch
     from sqlalchemy import select as sa_select
-    result = await db.execute(sa_select(Agency).where(Agency.id == agency.id))
+    result = await db.execute(sa_select(Branch).where(Branch.id == agency.id))
     ag = result.scalar_one()
     ag.is_open = True
     ag.is_active = True
@@ -56,10 +56,10 @@ async def _create_user(db, email: str, org_id: str) -> User:
 
 
 async def _create_service_entity(db, agency_id: str, org_id: str) -> str:
-    """Crée un Service dans une agence et retourne son ID."""
-    from app.models.agency import Service
+    """Crée un Service dans une branch et retourne son ID."""
+    from app.models.branch import Service
     svc = Service(
-        agency_id=agency_id,
+        branch_id=agency_id,
         org_id=org_id,
         name="Service Test",
         ticket_prefix="T",
@@ -192,7 +192,7 @@ async def test_org_a_cannot_see_agencies_of_org_b(db_session):
     await _create_agency(db_session, org_a, "ag-a-2")
     await _create_agency(db_session, org_b, "ag-b-1")
 
-    svc = AgencyService(db_session)
+    svc = BranchService(db_session)
     result = await svc.list(caller_org_id=org_a, org_id=org_a)
 
     agency_org_ids = {a.org_id for a in result.items}
@@ -202,24 +202,24 @@ async def test_org_a_cannot_see_agencies_of_org_b(db_session):
 
 @pytest.mark.asyncio
 async def test_org_a_cannot_update_agency_of_org_b(db_session):
-    """Un admin d'org A ne peut pas modifier une agence d'org B."""
-    from app.schemas.agency import UpdateAgencyRequest
+    """Un admin d'org A ne peut pas modifier une branch d'org B."""
+    from app.schemas.branch import UpdateBranchRequest
 
     org_a = await _create_org(db_session, "org-upd-a", "Org Upd A")
     org_b = await _create_org(db_session, "org-upd-b", "Org Upd B")
 
     agency_b_id = await _create_agency(db_session, org_b, "ag-upd-b")
 
-    svc = AgencyService(db_session)
+    svc = BranchService(db_session)
     with pytest.raises(HTTPException) as exc_info:
         await svc.update(
             agency_b_id,
-            UpdateAgencyRequest(name="Hack"),
+            UpdateBranchRequest(name="Hack"),
             caller_org_id=org_a,
         )
 
     assert exc_info.value.status_code == 404
-    assert exc_info.value.detail["code"] == "AGENCY_NOT_FOUND"
+    assert exc_info.value.detail["code"] == "BRANCH_NOT_FOUND"
 
 # ── Tests isolation global : org_id dans le JWT ───────────────────────────────
 

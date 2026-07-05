@@ -15,10 +15,10 @@ from fastapi import HTTPException
 
 from app.services.counter_service import CounterService
 from app.services.organization_service import OrganizationService
-from app.services.agency_service import AgencyService
+from app.services.branch_service import BranchService
 from app.schemas.counter import CreateCounterRequest, UpdateCounterRequest
 from app.schemas.organization import CreateOrganizationRequest
-from app.schemas.agency import CreateAgencyRequest
+from app.schemas.branch import CreateBranchRequest
 
 
 # ── Fixtures helpers ──────────────────────────────────────────────────────────
@@ -35,7 +35,7 @@ def org_service(db_session):
 
 @pytest.fixture
 def agency_service(db_session):
-    return AgencyService(db_session)
+    return BranchService(db_session)
 
 
 async def _create_org(org_service, slug: str = "bcb", name: str = "BCB") -> str:
@@ -48,10 +48,9 @@ async def _create_org(org_service, slug: str = "bcb", name: str = "BCB") -> str:
 async def _create_agency(agency_service, org_id: str, slug: str = "bcb-centre") -> str:
     agency = await agency_service.create(
         org_id,
-        CreateAgencyRequest(name="Agence Centre", slug=slug, sector="bank"),
+        CreateBranchRequest(name="Agence Centre", slug=slug, sector="bank"),
         caller_org_id=None,
     )
-    # Ouvrir l'agence pour qu'elle soit is_active=True
     return agency.id
 
 
