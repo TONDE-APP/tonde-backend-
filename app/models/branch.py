@@ -10,7 +10,7 @@ Alembic : migration 003_rename_agencies_to_branches.py
 """
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import String, DateTime, Float, Boolean, Integer, ForeignKey, Text
+from sqlalchemy import String, DateTime, Float, Boolean, Integer, ForeignKey, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
@@ -65,6 +65,19 @@ class Branch(Base):
     # ── Configuration file d'attente ──────────────────────────
     max_daily_tickets: Mapped[int] = mapped_column(Integer, default=500)
     avg_service_minutes: Mapped[int] = mapped_column(Integer, default=5)
+
+    # ── Configuration avancée (S2-10) ─────────────────────────
+    # Seuil d'alerte : notifier si temps d'attente > N minutes
+    max_wait_minutes_alert: Mapped[int] = mapped_column(Integer, default=30)
+    # Horaires détaillés par jour (JSON) — ex: {"monday": {"open": "08:00", "close": "17:00"}}
+    # Si NULL, on utilise opens_at/closes_at comme horaire global
+    operating_hours: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Activer les rappels SMS avant le tour du client
+    enable_sms_reminders: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Intervalle de rappel SMS en minutes avant appel estimé
+    reminder_interval_minutes: Mapped[int] = mapped_column(Integer, default=10)
+    # Langues supportées par cette branch (JSON array) — ex: ["fr", "en"]
+    supported_languages: Mapped[list | None] = mapped_column(JSON, nullable=True, default=lambda: ["fr"])
 
     # ── Statut ────────────────────────────────────────────────
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
