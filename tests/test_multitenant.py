@@ -253,4 +253,4 @@ async def test_ticket_create_uses_org_id_from_jwt_not_client(db_session, mock_re
 
     # L'agence n'est pas visible depuis org_a
     assert exc_info.value.status_code == 404
-    assert exc_info.value.detail["code"] in ("AGENCY_NOT_FOUND", "SERVICE_NOT_FOUND")
+    assert exc_info.value.detail["code"] in ("BRANCH_NOT_FOUND", "SERVICE_NOT_FOUND")
