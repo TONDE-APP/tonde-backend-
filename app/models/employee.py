@@ -49,10 +49,10 @@ class Employee(Base):
     )
 
     # ── Affectation ───────────────────────────────────────────
-    # Agence d'affectation principale
+    # Branch d'affectation principale (Sprint 2 — S2-01 : agencies → branches)
     agency_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("agencies.id", ondelete="SET NULL"),
+        ForeignKey("branches.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )

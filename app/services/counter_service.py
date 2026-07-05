@@ -11,7 +11,7 @@ from sqlalchemy import select, func
 from fastapi import HTTPException
 
 from app.models.counter import Counter
-from app.models.agency import Agency
+from app.models.branch import Branch
 from app.schemas.counter import (
     CreateCounterRequest,
     UpdateCounterRequest,
@@ -27,27 +27,27 @@ class CounterService:
 
     async def _verify_agency_belongs_to_org(
         self, agency_id: str, org_id: str
-    ) -> Agency:
+    ) -> Branch:
         """
-        Vérifie que l'agence existe et appartient à l'organisation.
+        Vérifie que la branch existe et appartient à l'organisation.
 
         Raises:
-            HTTPException 404: Si l'agence n'existe pas ou n'appartient pas à l'org
+            HTTPException 404: Si la branch n'existe pas ou n'appartient pas à l'org
         """
         result = await self.db.execute(
-            select(Agency).where(
-                Agency.id == agency_id,
-                Agency.org_id == org_id,
-                Agency.is_active == True,  # noqa: E712
+            select(Branch).where(
+                Branch.id == agency_id,
+                Branch.org_id == org_id,
+                Branch.is_active == True,  # noqa: E712
             )
         )
-        agency = result.scalar_one_or_none()
-        if not agency:
+        branch = result.scalar_one_or_none()
+        if not branch:
             raise HTTPException(
                 status_code=404,
                 detail={"code": "AGENCY_NOT_FOUND", "message": "Agence introuvable ou inactive"}
             )
-        return agency
+        return branch
 
     async def create(
         self, org_id: str, agency_id: str, data: CreateCounterRequest

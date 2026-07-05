@@ -32,10 +32,11 @@ class Counter(Base):
         index=True,
     )
 
-    # ── Appartenance à une agence ─────────────────────────────
+    # ── Appartenance à une branch ─────────────────────────────
+    # Sprint 2 — S2-01 : agencies renommée en branches
     agency_id: Mapped[str] = mapped_column(
         String(36),
-        ForeignKey("agencies.id", ondelete="CASCADE"),
+        ForeignKey("branches.id", ondelete="CASCADE"),
         index=True,
     )
 

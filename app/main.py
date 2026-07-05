@@ -25,7 +25,7 @@ from app.core.redis import get_redis, close_redis
 # connaisse toutes les tables avant toute opération DB
 import app.models  # noqa: F401
 
-from app.routers import auth, tickets, organizations, agencies, counters, employees
+from app.routers import auth, tickets, organizations, branches, counters, employees
 from app.websocket.queue_ws import ws_manager
 
 logger = logging.getLogger(__name__)
@@ -137,7 +137,7 @@ app.add_middleware(
 app.include_router(auth.router,          prefix="/api/v1/auth",          tags=["🔐 Auth"])
 app.include_router(tickets.router,       prefix="/api/v1/tickets",       tags=["🎫 Tickets"])
 app.include_router(organizations.router, prefix="/api/v1/organizations", tags=["🏢 Organizations"])
-app.include_router(agencies.router,      prefix="/api/v1/organizations", tags=["🏦 Agencies"])
+app.include_router(branches.router,      prefix="/api/v1/organizations", tags=["🏦 Branches"])
 app.include_router(
     counters.router,
     prefix="/api/v1/organizations/{org_id}/agencies/{agency_id}/counters",

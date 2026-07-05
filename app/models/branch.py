@@ -1,11 +1,12 @@
 """
-Modèles Agency et Service.
+Modèles Branch et Service — Sprint 2 (renommage Agency → Branch).
 
-NOTE ARCHITECTURE : Dans TONDE v1.0, 'Agency' sera renommé 'Branch'.
-Ce fichier est conservé tel quel pour le Sprint 0.
-La migration Agency → Branch sera faite en Sprint 1 via Alembic.
+TONDE hiérarchie officielle :
+  Organization → Branch → Service → Counter → Ticket
 
-  Organization → Branch (Agency) → Service → Counter → Ticket
+Alembic : migration 003_rename_agencies_to_branches.py
+  → ALTER TABLE agencies RENAME TO branches
+  → ALTER TABLE services : FK agency_id pointe toujours sur la même table renommée
 """
 import uuid
 from datetime import datetime, timezone
@@ -14,8 +15,14 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
 
-class Agency(Base):
-    __tablename__ = "agencies"
+class Branch(Base):
+    """
+    Filiale / agence physique d'une organisation.
+
+    Exemples : BANCOBU Agence Centre-Ville, CHUK Urgences.
+    Contient des Services (Caisse, Crédit, Consultation…).
+    """
+    __tablename__ = "branches"
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True,
@@ -52,7 +59,7 @@ class Agency(Base):
     opens_at: Mapped[str] = mapped_column(String(5), default="08:00")
     closes_at: Mapped[str] = mapped_column(String(5), default="17:00")
 
-    # ── Branding ─────────────────────────────────────────────
+    # ── Branding ──────────────────────────────────────────────
     logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # ── Configuration file d'attente ──────────────────────────
@@ -76,16 +83,16 @@ class Agency(Base):
 
     # ── Relations ─────────────────────────────────────────────
     services: Mapped[list["Service"]] = relationship(
-        "Service", back_populates="agency", cascade="all, delete-orphan"
+        "Service", back_populates="branch", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:
-        return f"<Agency {self.name}>"
+        return f"<Branch {self.name}>"
 
 
 class Service(Base):
     """
-    Un service proposé par une agence.
+    Un service proposé par une branch.
     Exemples : 'Dépôt', 'Retrait', 'Consultation médicale', 'Inscription'.
     Chaque service a son propre préfixe de ticket (A, B, C...).
     """
@@ -104,15 +111,16 @@ class Service(Base):
         index=True,
     )
 
-    agency_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("agencies.id", ondelete="CASCADE")
+    branch_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("branches.id", ondelete="CASCADE"),
+        index=True,
     )
 
-    # ── Informations ─────────────────────────────────────────
+    # ── Informations ──────────────────────────────────────────
     name: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Préfixe du ticket pour ce service (A, B, C...)
+    # Préfixe du ticket pour ce service (A, B, C…)
     ticket_prefix: Mapped[str] = mapped_column(String(5), default="A")
 
     # Durée moyenne d'un service en minutes (pour calcul ETA)
@@ -127,7 +135,7 @@ class Service(Base):
     )
 
     # ── Relations ─────────────────────────────────────────────
-    agency: Mapped["Agency"] = relationship("Agency", back_populates="services")
+    branch: Mapped["Branch"] = relationship("Branch", back_populates="services")
 
     def __repr__(self) -> str:
-        return f"<Service {self.name} @ {self.agency_id}>"
+        return f"<Service {self.name} @ {self.branch_id}>"

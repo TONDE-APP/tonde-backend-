@@ -15,7 +15,7 @@ from unittest.mock import patch, AsyncMock
 from fastapi import HTTPException
 
 from app.models.organization import Organization
-from app.models.agency import Agency, Service
+from app.models.branch import Branch, Service
 from app.models.ticket import TicketStatus, TicketPriority
 from app.schemas.ticket import CreateTicketRequest
 
@@ -47,9 +47,9 @@ async def _create_test_org(db_session) -> Organization:
     return org
 
 
-async def _create_test_agency(db_session, org_id: str, is_open: bool = True) -> Agency:
-    """Crée une agence de test."""
-    agency = Agency(
+async def _create_test_agency(db_session, org_id: str, is_open: bool = True) -> Branch:
+    """Crée une branch de test."""
+    branch = Branch(
         org_id=org_id,
         name="Agence Centre-ville",
         slug=f"agence-centre-{org_id[:8]}",
@@ -57,17 +57,17 @@ async def _create_test_agency(db_session, org_id: str, is_open: bool = True) -> 
         is_active=True,
         is_open=is_open,
     )
-    db_session.add(agency)
+    db_session.add(branch)
     await db_session.commit()
-    await db_session.refresh(agency)
-    return agency
+    await db_session.refresh(branch)
+    return branch
 
 
 async def _create_test_service(db_session, agency_id: str, org_id: str) -> Service:
     """Crée un service de test."""
     service = Service(
         org_id=org_id,
-        agency_id=agency_id,
+        branch_id=agency_id,
         name="Dépôt",
         ticket_prefix="A",
         avg_duration_minutes=5,
@@ -121,7 +121,7 @@ async def test_create_ticket_agency_closed_raises_400(ticket_service, db_session
         )
 
     assert exc_info.value.status_code == 400
-    assert exc_info.value.detail["code"] == "AGENCY_CLOSED"
+    assert exc_info.value.detail["code"] == "BRANCH_CLOSED"
 
 
 @pytest.mark.asyncio
@@ -314,7 +314,7 @@ async def test_one_active_ticket_global_rule(ticket_service, db_session, mock_qu
     """Un user avec ticket WAITING dans agence A ne peut pas prendre un ticket dans agence B."""
     org = await _create_test_org(db_session)
     agency_a = await _create_test_agency(db_session, org.id)
-    agency_b = Agency(
+    agency_b = Branch(
         org_id=org.id,
         name="Agence B",
         slug=f"agence-b-{org.id[:8]}",

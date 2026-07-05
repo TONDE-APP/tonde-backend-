@@ -1,19 +1,22 @@
 """
-Schémas Pydantic v2 pour le module Branches/Agencies.
+Schémas Pydantic v2 pour le module Branches.
+
+Remplace app/schemas/agency.py (Sprint 2 — S2-01).
 """
 from datetime import datetime
 from typing import Literal
 from pydantic import BaseModel, ConfigDict, field_validator, EmailStr
 
 
-AgencySector = Literal["bank", "hospital", "university", "administration", "other"]
+BranchSector = Literal["bank", "hospital", "university", "administration", "other"]
 
 
 # ── Requêtes ──────────────────────────────────────────────────────────────────
-class CreateAgencyRequest(BaseModel):
+
+class CreateBranchRequest(BaseModel):
     name: str
     slug: str
-    sector: AgencySector
+    sector: BranchSector
     description: str | None = None
     phone: str | None = None
     email: EmailStr | None = None
@@ -52,7 +55,7 @@ class CreateAgencyRequest(BaseModel):
         return v
 
 
-class UpdateAgencyRequest(BaseModel):
+class UpdateBranchRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     phone: str | None = None
@@ -86,7 +89,8 @@ class UpdateAgencyRequest(BaseModel):
 
 
 # ── Réponses ──────────────────────────────────────────────────────────────────
-class AgencyResponse(BaseModel):
+
+class BranchResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
@@ -113,8 +117,8 @@ class AgencyResponse(BaseModel):
     updated_at: datetime
 
 
-class AgencyListResponse(BaseModel):
-    items: list[AgencyResponse]
+class BranchListResponse(BaseModel):
+    items: list[BranchResponse]
     total: int
     page: int
     page_size: int
