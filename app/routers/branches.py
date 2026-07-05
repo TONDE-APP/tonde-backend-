@@ -18,6 +18,7 @@ from app.schemas.branch import (
     UpdateBranchRequest,
     BranchListResponse,
 )
+from app.schemas.branch_config import UpdateBranchConfigRequest
 from app.services.branch_service import BranchService
 
 router = APIRouter()
@@ -142,6 +143,52 @@ async def delete_branch(
     svc = BranchService(db)
     await svc.delete(branch_id, current_user.org_id)
     return {"success": True, "message": "Branch désactivée"}
+
+
+# ── Configuration file d'attente (S2-10) ──────────────────────────────────────
+
+@router.get(
+    "/{org_id}/branches/{branch_id}/config",
+    summary="Configuration file d'attente d'une branch",
+)
+async def get_branch_config(
+    org_id: str,
+    branch_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Retourne la configuration complète de la file d'attente.
+    Accessible aux agents, superviseurs et admins de la branch.
+    """
+    _require_branch_admin(current_user)
+    _check_org_access(current_user, org_id)
+    svc = BranchService(db)
+    result = await svc.get_config(branch_id, current_user.org_id)
+    return {"success": True, "data": result}
+
+
+@router.patch(
+    "/{org_id}/branches/{branch_id}/config",
+    summary="Modifier la configuration file d'attente",
+)
+async def update_branch_config(
+    org_id: str,
+    branch_id: str,
+    body: UpdateBranchConfigRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Met à jour la configuration de la file d'attente (PATCH partiel).
+    Seuls les champs fournis sont modifiés.
+    Réservé aux ADMIN_AGENCY, ADMIN_ORG et SUPER_ADMIN.
+    """
+    _require_branch_admin(current_user)
+    _check_org_access(current_user, org_id)
+    svc = BranchService(db)
+    result = await svc.update_config(branch_id, body, current_user.org_id)
+    return {"success": True, "data": result, "message": "Configuration mise à jour"}
 
 
 # ── Alias rétro-compatibles /agencies ─────────────────────────────────────────

@@ -230,3 +230,91 @@ class BranchService:
 
         branch.is_active = False
         await self.db.commit()
+
+    # ── Configuration file d'attente (S2-10) ─────────────────────────────────
+
+    async def get_config(
+        self, branch_id: str, caller_org_id: str | None
+    ) -> "BranchConfigResponse":
+        """
+        Retourne la configuration de la file d'attente d'une branch.
+
+        Args:
+            branch_id: UUID de la branch
+            caller_org_id: org_id de l'appelant (None = super_admin)
+
+        Returns:
+            BranchConfigResponse avec tous les champs de config
+
+        Raises:
+            HTTPException 404: Si la branch est introuvable ou hors org
+        """
+        from app.schemas.branch_config import BranchConfigResponse
+
+        query = select(Branch).where(Branch.id == branch_id)
+        if caller_org_id is not None:
+            query = query.where(Branch.org_id == caller_org_id)
+
+        result = await self.db.execute(query)
+        branch = result.scalar_one_or_none()
+        if not branch:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "BRANCH_NOT_FOUND", "message": "Branch introuvable"},
+            )
+
+        return BranchConfigResponse(
+            branch_id=branch.id,
+            max_daily_tickets=branch.max_daily_tickets,
+            avg_service_minutes=branch.avg_service_minutes,
+            max_wait_minutes_alert=branch.max_wait_minutes_alert,
+            opens_at=branch.opens_at,
+            closes_at=branch.closes_at,
+            operating_hours=branch.operating_hours,
+            enable_sms_reminders=branch.enable_sms_reminders,
+            reminder_interval_minutes=branch.reminder_interval_minutes,
+            supported_languages=branch.supported_languages or ["fr"],
+        )
+
+    async def update_config(
+        self, branch_id: str, data: "UpdateBranchConfigRequest", caller_org_id: str | None
+    ) -> "BranchConfigResponse":
+        """
+        Met à jour la configuration de la file d'attente (PATCH partiel).
+
+        Seuls les champs fournis dans data sont modifiés.
+        Les champs absents conservent leur valeur actuelle.
+
+        Args:
+            branch_id: UUID de la branch à configurer
+            data: Champs de config à mettre à jour
+            caller_org_id: org_id de l'appelant pour vérification d'appartenance
+
+        Returns:
+            BranchConfigResponse mise à jour
+
+        Raises:
+            HTTPException 404: Si la branch est introuvable ou hors org
+        """
+        query = select(Branch).where(Branch.id == branch_id)
+        if caller_org_id is not None:
+            query = query.where(Branch.org_id == caller_org_id)
+
+        result = await self.db.execute(query)
+        branch = result.scalar_one_or_none()
+        if not branch:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "BRANCH_NOT_FOUND", "message": "Branch introuvable"},
+            )
+
+        # PATCH partiel — ne modifier que les champs fournis
+        update_data = data.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(branch, field, value)
+
+        await self.db.commit()
+        await self.db.refresh(branch)
+
+        # Retourner la config complète mise à jour
+        return await self.get_config(branch_id, caller_org_id)
