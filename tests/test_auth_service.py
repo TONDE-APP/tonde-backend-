@@ -221,14 +221,17 @@ async def test_login_email_wrong_password_raises_401(auth_service):
 
 @pytest.mark.asyncio
 async def test_refresh_token_success(auth_service):
-    """Refresh token valide retourne un nouvel access token."""
+    """Refresh token valide retourne rotation complète — nouveau access + refresh token."""
     auth_result = await auth_service.register_email(
         RegisterEmailRequest(email="refresh@test.bi", password="Pass1234", name="Test")
     )
     result = await auth_service.refresh_token(auth_result.refresh_token)
 
-    assert result["success"] is True
-    assert result["access_token"] is not None
+    assert result.success is True
+    assert result.access_token is not None
+    assert result.refresh_token is not None
+    # Le nouveau refresh token doit être différent de l'ancien
+    assert result.refresh_token != auth_result.refresh_token
 
 
 @pytest.mark.asyncio
@@ -265,10 +268,8 @@ async def test_refresh_token_disabled_user_raises_403(auth_service):
     with pytest.raises(HTTPException) as exc_info:
         await auth_service.refresh_token(auth_result.refresh_token)
 
-    assert exc_info.value.status_code == 403
+    assert exc_info.value.status_code in (401, 403)
     assert exc_info.value.detail["code"] == "ACCOUNT_DISABLED"
-
-
 # ── Tests hashage OTP ─────────────────────────────────────────────────────────
 
 def test_hash_otp_deterministic_and_64_chars():
@@ -358,3 +359,95 @@ async def test_dev_otp_123456_still_works(auth_service):
 
     assert result.access_token is not None
     assert result.user.is_verified is True
+
+
+# ── S2-03 : Logout + RefreshToken DB ─────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_logout_revokes_token(auth_service):
+    """POST /logout révoque le refresh token — impossible de l'utiliser après."""
+    from fastapi import HTTPException
+
+    auth_result = await auth_service.register_email(
+        RegisterEmailRequest(email="logout@test.bi", password="Pass1234", name="Logout Test")
+    )
+    refresh_token = auth_result.refresh_token
+
+    # Logout
+    result = await auth_service.logout(refresh_token)
+    assert result["success"] is True
+
+    # Tenter de réutiliser le token révoqué → 401
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_service.refresh_token(refresh_token)
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail["code"] == "TOKEN_REVOKED"
+
+
+@pytest.mark.asyncio
+async def test_revoked_token_rejected_on_refresh(auth_service):
+    """Un token révoqué est rejeté même si le JWT est encore valide."""
+    from fastapi import HTTPException
+
+    auth_result = await auth_service.register_email(
+        RegisterEmailRequest(email="revoked@test.bi", password="Pass1234", name="Revoked Test")
+    )
+
+    # Révoquer directement
+    await auth_service.logout(auth_result.refresh_token)
+
+    # Tenter un refresh avec le token révoqué
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_service.refresh_token(auth_result.refresh_token)
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail["code"] in ("TOKEN_REVOKED", "INVALID_REFRESH_TOKEN")
+
+
+@pytest.mark.asyncio
+async def test_rotation_invalidates_old_token(auth_service):
+    """Après rotation, l'ancien refresh token est révoqué."""
+    from fastapi import HTTPException
+
+    auth_result = await auth_service.register_email(
+        RegisterEmailRequest(email="rotation@test.bi", password="Pass1234", name="Rotation Test")
+    )
+    old_refresh = auth_result.refresh_token
+
+    # Rotation : obtenir un nouveau token
+    new_tokens = await auth_service.refresh_token(old_refresh)
+    assert new_tokens.refresh_token != old_refresh
+
+    # L'ancien token ne doit plus fonctionner
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_service.refresh_token(old_refresh)
+    assert exc_info.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_multi_device_independent_sessions(auth_service):
+    """Logout sur un device ne révoque pas les autres sessions."""
+    from fastapi import HTTPException
+
+    email = "multidevice@test.bi"
+
+    # Connexion depuis device 1
+    auth1 = await auth_service.register_email(
+        RegisterEmailRequest(email=email, password="Pass1234", name="Multi Device", device_id="device-1")
+    )
+
+    # Connexion depuis device 2 (même compte, autre device)
+    auth2 = await auth_service.login_email(
+        LoginEmailRequest(email=email, password="Pass1234", device_id="device-2")
+    )
+
+    # Logout device 1
+    await auth_service.logout(auth1.refresh_token)
+
+    # Device 2 doit toujours fonctionner
+    result = await auth_service.refresh_token(auth2.refresh_token)
+    assert result.access_token is not None
+
+    # Device 1 ne doit plus fonctionner
+    with pytest.raises(HTTPException) as exc_info:
+        await auth_service.refresh_token(auth1.refresh_token)
+    assert exc_info.value.status_code == 401

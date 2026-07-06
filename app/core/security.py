@@ -3,6 +3,7 @@ Sécurité : JWT, hachage de mots de passe, OTP.
 """
 import random
 import string
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -46,6 +47,7 @@ def create_access_token(user_id: str) -> str:
 def create_refresh_token(user_id: str) -> str:
     """
     Crée un token de rafraîchissement valide 7 jours.
+    Inclut un jti (JWT ID) unique pour garantir l'unicité du hash en DB.
     Permet de renouveler l'access token sans se reconnecter.
     """
     expire = datetime.now(timezone.utc) + timedelta(
@@ -56,6 +58,7 @@ def create_refresh_token(user_id: str) -> str:
         "type": "refresh",
         "exp": expire,
         "iat": datetime.now(timezone.utc),
+        "jti": str(uuid.uuid4()),  # ID unique — garantit un hash différent à chaque émission
     }
     return jwt.encode(payload, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
