@@ -33,11 +33,12 @@ from app.core.database import Base
 from app.models import (  # noqa: F401
     organization,
     user,
-    agency,
+    branch,
     counter,
     employee,
     ticket,
     refresh_token,
+    user_organization,
 )
 
 # ── Configuration Alembic ─────────────────────────────────────────────────────

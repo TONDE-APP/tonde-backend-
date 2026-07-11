@@ -74,6 +74,10 @@ class OrganizationResponse(BaseModel):
     website: str | None
     logo_url: str | None
     is_active: bool
+    # S2-08 : champs invitation (None si pas de code généré)
+    invitation_code: str | None = None
+    invitation_expires_at: datetime | None = None
+    invitation_code_active: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -83,3 +87,46 @@ class OrganizationListResponse(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+# ── S2-08 : Join by Code ──────────────────────────────────────────────────────
+class JoinByCodeRequest(BaseModel):
+    invitation_code: str
+    member_number: str | None = None  # numéro de compte, dossier patient, etc.
+
+    @field_validator("invitation_code")
+    @classmethod
+    def code_uppercase(cls, v: str) -> str:
+        v = v.strip().upper()
+        if not v:
+            raise ValueError("Le code d'invitation ne peut pas être vide")
+        return v
+
+
+class GenerateInvitationCodeRequest(BaseModel):
+    expires_in_days: int = 30  # expiration par défaut 30 jours
+
+    @field_validator("expires_in_days")
+    @classmethod
+    def valid_expiry(cls, v: int) -> int:
+        if v < 1 or v > 365:
+            raise ValueError("L'expiration doit être entre 1 et 365 jours")
+        return v
+
+
+class OrganizationMemberResponse(BaseModel):
+    """Réponse après avoir rejoint une organisation."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    user_id: str
+    organization_id: str
+    organization_name: str
+    member_number: str | None
+    status: str
+    joined_at: datetime
+
+
+class UserOrganizationListResponse(BaseModel):
+    items: list[OrganizationMemberResponse]
+    total: int
