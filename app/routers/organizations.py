@@ -13,6 +13,8 @@ from app.schemas.organization import (
     UpdateOrganizationRequest,
     OrganizationResponse,
     OrganizationListResponse,
+    JoinByCodeRequest,
+    GenerateInvitationCodeRequest,
 )
 from app.services.organization_service import OrganizationService
 
@@ -137,3 +139,77 @@ async def delete_organization(
     service = OrganizationService(db)
     await service.delete(org_id)
     return {"success": True, "message": "Organisation désactivée"}
+
+
+# ── S2-08 : Join by Code ──────────────────────────────────────────────────────
+
+@router.post("/{org_id}/invitation-code", status_code=200)
+async def generate_invitation_code(
+    org_id: str,
+    body: GenerateInvitationCodeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Génère un code d'invitation pour l'organisation.
+    Réservé aux admins de l'organisation.
+    """
+    _require_admin(current_user)
+    _check_org_access(current_user, org_id)
+    service = OrganizationService(db)
+    result = await service.generate_invitation_code(org_id, body)
+    return {
+        "success": True,
+        "data": {
+            "invitation_code": result.invitation_code,
+            "expires_at": result.invitation_expires_at,
+            "active": result.invitation_code_active,
+        },
+        "message": "Code d'invitation généré"
+    }
+
+
+@router.post("/me/join", status_code=201)
+async def join_organization(
+    body: JoinByCodeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Rejoindre une organisation via un code d'invitation.
+    Accessible à tout utilisateur authentifié.
+    """
+    service = OrganizationService(db)
+    result = await service.join_by_code(
+        code=body.invitation_code,
+        user_id=current_user.id,
+        member_number=body.member_number,
+    )
+    return {"success": True, "data": result, "message": f"Vous avez rejoint {result.organization_name}"}
+
+
+@router.get("/me/organizations", status_code=200)
+async def get_my_organizations(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Liste toutes les organisations de l'utilisateur connecté.
+    """
+    service = OrganizationService(db)
+    result = await service.get_user_organizations(current_user.id)
+    return {"success": True, "data": result}
+
+
+@router.delete("/me/organizations/{org_id}", status_code=200)
+async def leave_organization(
+    org_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """
+    Quitter une organisation.
+    """
+    service = OrganizationService(db)
+    await service.leave_organization(current_user.id, org_id)
+    return {"success": True, "message": "Vous avez quitté l'organisation"}

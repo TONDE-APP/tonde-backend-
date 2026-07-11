@@ -48,6 +48,20 @@ class Organization(Base):
     # ── Statut ────────────────────────────────────────────────
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
+    # ── Code d'invitation (S2-08) ─────────────────────────────
+    # Code alphanumérique uppercase généré par l'admin pour permettre
+    # aux utilisateurs de rejoindre l'organisation sans intervention manuelle.
+    # Sécurité : code unique, expiration obligatoire, révocable à tout moment.
+    invitation_code: Mapped[str | None] = mapped_column(
+        String(12), unique=True, nullable=True, index=True
+    )
+    invitation_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    invitation_code_active: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
     # ── Dates ─────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
