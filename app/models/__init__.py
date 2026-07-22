@@ -21,3 +21,9 @@ from app.models.ticket import (                         # noqa: F401
 )
 from app.models.refresh_token import RefreshToken       # noqa: F401
 from app.models.user_organization import UserOrganization  # noqa: F401  Sprint 2 : S2-02
+from app.models.notification import (              # noqa: F401
+    Notification,
+    NotificationChannel,
+    NotificationStatus,
+)
+from app.models.queue_log import QueueLog, QueueLogAction  # noqa: F401
